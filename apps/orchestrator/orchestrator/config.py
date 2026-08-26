@@ -9,7 +9,14 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+def _repo_root() -> Path:
+    p = Path(__file__).resolve()
+    if len(p.parents) > 3:
+        return p.parents[3]
+    return p.parents[1] if len(p.parents) > 1 else Path("/app")
+
+
+_REPO_ROOT = _repo_root()
 
 
 class DeskMode(str, Enum):
