@@ -7,7 +7,7 @@ use std::env;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use log::{info, warn};
 use reqwest::Client;
 use serde::Serialize;
