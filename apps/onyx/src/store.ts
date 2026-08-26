@@ -22,6 +22,9 @@ export type Position = {
   mint: string;
   symbol: string;
   entry_sol: number;
+  upnl_pct?: number | null;
+  source?: string;
+  safety_score?: number;
 };
 
 type DeskState = {
@@ -36,6 +39,10 @@ type DeskState = {
   selectedMint: string | null;
   chartPoints: number[];
   busyAgent: string | null;
+  stats: Record<string, unknown> | null;
+  equityPoints: { ts: string; equity_sol: number }[];
+  learnerWeights: Record<string, number>;
+  fomoEnabled: boolean;
   setMode: (m: DeskMode) => void;
   setLiveReady: (v: boolean) => void;
   setConnected: (v: boolean) => void;
@@ -45,6 +52,7 @@ type DeskState = {
   setAgentDone: (id: string, verdict: string, ms: number) => void;
   selectMint: (mint: string | null) => void;
   pushChart: (v: number) => void;
+  setEquityPoints: (points: { ts: string; equity_sol: number }[]) => void;
 };
 
 const AGENT_IDS = [
@@ -69,6 +77,10 @@ export const useDesk = create<DeskState>((set, get) => ({
   selectedMint: null,
   chartPoints: [50, 52, 48, 55, 58, 54, 62, 65, 61, 68],
   busyAgent: null,
+  stats: null,
+  equityPoints: [],
+  learnerWeights: { pump: 1, fomo: 1, convergence: 1.2 },
+  fomoEnabled: false,
   setMode: (m) => set({ mode: m }),
   setLiveReady: (v) => set({ liveReady: v }),
   setConnected: (v) => set({ connected: v }),
@@ -82,6 +94,10 @@ export const useDesk = create<DeskState>((set, get) => ({
       });
     }
     if (typeof p.mode === "string") set({ mode: p.mode as DeskMode });
+    if (p.stats) set({ stats: p.stats as Record<string, unknown> });
+    if (p.learner_weights)
+      set({ learnerWeights: p.learner_weights as Record<string, number> });
+    if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
   },
   pushFeed: (item) =>
     set((s) => ({ feed: [item, ...s.feed].slice(0, 80) })),
@@ -111,4 +127,5 @@ export const useDesk = create<DeskState>((set, get) => ({
   selectMint: (mint) => set({ selectedMint: mint }),
   pushChart: (v) =>
     set((s) => ({ chartPoints: [...s.chartPoints.slice(-39), v] })),
+  setEquityPoints: (points) => set({ equityPoints: points }),
 }));

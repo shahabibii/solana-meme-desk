@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { connectOnyx, fetchMode, fetchStatus, setMode } from "./api";
+import { connectOnyx, fetchEquityCurve, fetchMode, fetchStatus, setMode } from "./api";
 import { useDesk, type FeedItem } from "./store";
 import AgentRail from "./components/AgentRail";
 import OnyxOrb from "./components/OnyxOrb";
 import SignalFeed from "./components/SignalFeed";
 import MintChart from "./components/MintChart";
 import ChatBar from "./components/ChatBar";
+import EquityCurve from "./components/EquityCurve";
+import StatsPanel from "./components/StatsPanel";
 
 function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
   const ts = String(data.ts ?? new Date().toISOString());
@@ -64,6 +66,12 @@ export default function App() {
       desk.setMode(m.mode);
       desk.setLiveReady(m.live_ready);
     });
+    void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
+    const iv = setInterval(() => {
+      void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
+      void fetchStatus().then((s) => desk.applyStatus(s));
+    }, 15000);
+    return () => clearInterval(iv);
   }, []);
 
   useEffect(() => {
@@ -168,18 +176,25 @@ export default function App() {
       <main className="desk-grid">
         <AgentRail agents={desk.agents} />
         <section className="center-stage">
+          <EquityCurve points={desk.equityPoints} />
           <MintChart points={desk.chartPoints} mint={desk.selectedMint} />
           <OnyxOrb state={orbState} mode={desk.mode} agent={desk.busyAgent} />
           <div className="positions">
             <h3>Open</h3>
             {desk.positions.length === 0 ? (
-              <p className="muted">No positions — agents scanning Pump.fun & fomo…</p>
+              <p className="muted">No positions — PumpPortal + Safety scanning…</p>
             ) : (
               <ul>
                 {desk.positions.map((p) => (
                   <li key={p.mint}>
                     <strong>{p.symbol}</strong>
                     <span>{p.entry_sol.toFixed(3)} SOL</span>
+                    {p.upnl_pct != null && (
+                      <span className={p.upnl_pct >= 0 ? "up" : "down"}>
+                        {p.upnl_pct >= 0 ? "+" : ""}
+                        {p.upnl_pct.toFixed(1)}%
+                      </span>
+                    )}
                     <code>{p.mint.slice(0, 8)}…</code>
                   </li>
                 ))}
@@ -187,7 +202,14 @@ export default function App() {
             )}
           </div>
         </section>
-        <SignalFeed items={desk.feed} onSelect={(m) => desk.selectMint(m)} />
+        <aside className="right-col">
+          <StatsPanel
+            stats={desk.stats as Parameters<typeof StatsPanel>[0]["stats"]}
+            weights={desk.learnerWeights}
+            fomoEnabled={desk.fomoEnabled}
+          />
+          <SignalFeed items={desk.feed} onSelect={(m) => desk.selectMint(m)} />
+        </aside>
       </main>
 
       <ChatBar

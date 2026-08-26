@@ -12,6 +12,28 @@ export async function fetchMode(): Promise<{ mode: DeskMode; live_ready: boolean
   return r.json();
 }
 
+export async function fetchEquityCurve(): Promise<{ points: { ts: string; equity_sol: number }[] }> {
+  const r = await fetch(`${BASE}/api/equity-curve`);
+  return r.json();
+}
+
+export async function fetchStats(): Promise<{
+  total_trades: number;
+  closed_trades: number;
+  blocks: number;
+  win_rate: number | null;
+  avg_pnl_pct: number | null;
+  total_pnl_pct: number;
+}> {
+  const r = await fetch(`${BASE}/api/stats`);
+  return r.json();
+}
+
+export async function runLearner(): Promise<{ weights: Record<string, number> }> {
+  const r = await fetch(`${BASE}/api/learner/run`, { method: "POST" });
+  return r.json();
+}
+
 export async function setMode(mode: DeskMode, confirm = false): Promise<void> {
   const r = await fetch(`${BASE}/api/mode`, {
     method: "PATCH",

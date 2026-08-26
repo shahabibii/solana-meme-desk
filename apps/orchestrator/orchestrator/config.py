@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     solana_private_key: str | None = None
     cope_api_key: str | None = None
     pumpportal_api_key: str | None = None
-    mock_stream: bool = True
+    mock_stream: bool = False
+    safety_min_score: int = 65
+    entry_min_score: int = 72
+    cope_poll_sec: int = 60
 
     paper_starting_sol: float = 1.0
 

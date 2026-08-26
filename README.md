@@ -26,7 +26,15 @@ cd apps/onyx
 npm install && npm run dev
 ```
 
-Open http://localhost:5173 — toggle **Paper / Live** in the header (Live arms execution; paper simulates fills).
+Open http://localhost:5173 — toggle **Paper / Live** in the header.
+
+### Environment
+
+Copy `apps/orchestrator/.env.example` → `.env`. Optional:
+
+- `COPE_API_KEY` — fomo.family smart-money via [Cope Capital API](https://api.cope.capital/v1)
+- `SOLANA_PRIVATE_KEY` + RPC — live trading
+- `MOCK_STREAM=true` — synthetic events only (dev)
 
 ## Modes
 
