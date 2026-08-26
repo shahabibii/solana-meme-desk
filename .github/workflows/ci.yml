@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  orchestrator:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,backtest]"
+      - run: pytest -q
+
+  onyx:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/onyx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/onyx/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  sniper-rs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo build --release
+        working-directory: apps/sniper-rs
