@@ -1,0 +1,13 @@
+.git
+.github
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+apps/onyx/dist
+data
+*.md
+!apps/orchestrator/README.md
+.env
+.env.*
+**/*.db

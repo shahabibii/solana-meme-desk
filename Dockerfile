@@ -6,7 +6,7 @@ RUN npm ci
 COPY apps/onyx/ ./
 RUN npm run build
 
-FROM rust:1.83-bookworm AS sniper
+FROM rust:1-bookworm AS sniper
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && rm -rf /var/lib/apt/lists/*
 COPY apps/sniper-rs/Cargo.toml apps/sniper-rs/Cargo.lock* ./
