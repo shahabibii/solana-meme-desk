@@ -131,7 +131,7 @@ class DeskRuntime:
         t0 = time.perf_counter()
         await self._agent_step("scout", mint, "PASS", int((time.perf_counter() - t0) * 1000))
 
-        report = await run_safety(mint, self.settings)
+        report = await run_safety(mint, self.settings, source=candidate.source)
         await self._agent_step("safety", mint, report.verdict, report.ms, ";".join(report.reasons))
         if not report.passed:
             self.journal.record_block(mint, report.reasons)

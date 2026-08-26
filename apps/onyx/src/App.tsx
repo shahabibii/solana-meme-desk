@@ -69,6 +69,7 @@ export default function App() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const voiceRef = useRef(voiceEnabled);
   voiceRef.current = voiceEnabled;
+  const lastBlockSpeak = useRef(0);
   const [listening, setListening] = useState(false);
   const [chatLog, setChatLog] = useState<{ role: string; text: string }[]>([
     { role: "onyx", text: "Solana meme desk online. Paper mode active — agents streaming." },
@@ -117,8 +118,13 @@ export default function App() {
         if (data.type === "trade.fill") {
           say(`${data.side} fill ${data.sol} SOL`);
         }
+        // Blocks are normal on Pump.fun — don't spam voice (max once per 2 min).
         if (data.type === "mint.blocked") {
-          say("Mint blocked by safety");
+          const now = Date.now();
+          if (now - lastBlockSpeak.current > 120_000) {
+            lastBlockSpeak.current = now;
+            say("Safety filtering launches — blocks are normal on Pump.fun.");
+          }
         }
         const item = feedFromEvent(data);
         if (item) desk.pushFeed(item);
