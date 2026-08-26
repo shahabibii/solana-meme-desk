@@ -1,5 +1,3 @@
-import { runBacktest, runLearner } from "../api";
-
 export default function StatsPanel({
   stats,
   weights,
@@ -48,14 +46,6 @@ export default function StatsPanel({
           </dd>
         </div>
       </dl>
-      <div className="stats-actions">
-        <button type="button" onClick={() => void runLearner()}>
-          Run learner
-        </button>
-        <button type="button" onClick={() => void runBacktest()}>
-          Backtest
-        </button>
-      </div>
       <h3>Learner weights</h3>
       <ul className="weights">
         {Object.entries(weights).map(([k, v]) => (

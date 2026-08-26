@@ -18,6 +18,8 @@ import ChatBar from "./components/ChatBar";
 import EquityCurve from "./components/EquityCurve";
 import StatsPanel from "./components/StatsPanel";
 import IntegrationsPanel from "./components/IntegrationsPanel";
+import CommandDeck from "./components/CommandDeck";
+import VitalsStrip from "./components/VitalsStrip";
 
 function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
   const ts = String(data.ts ?? new Date().toISOString());
@@ -181,6 +183,13 @@ export default function App() {
     }
   }
 
+  function notify(text: string) {
+    setChatLog((l) => [...l, { role: "onyx", text }]);
+    say(text);
+  }
+
+  const stats = desk.stats as { blocks?: number; total_trades?: number } | null;
+
   const orbState = useMemo(() => {
     if (desk.busyAgent) return "active";
     if (desk.mode === "live") return "armed";
@@ -227,6 +236,16 @@ export default function App() {
       </header>
       {modeError && <p className="mode-error">{modeError}</p>}
 
+      <VitalsStrip
+        mode={desk.mode}
+        connected={desk.connected}
+        liveReady={desk.liveReady}
+        busyAgent={desk.busyAgent}
+        blocks={stats?.blocks ?? 0}
+        trades={stats?.total_trades ?? 0}
+        openPositions={desk.positions.length}
+      />
+
       <main className="desk-grid">
         <AgentRail agents={desk.agents} />
         <section className="center-stage">
@@ -257,6 +276,10 @@ export default function App() {
           </div>
         </section>
         <aside className="right-col">
+          <CommandDeck
+            onNotify={notify}
+            onRefresh={(s) => desk.applyStatus(s)}
+          />
           <IntegrationsPanel integrations={desk.integrations} />
           <StatsPanel
             stats={desk.stats as Parameters<typeof StatsPanel>[0]["stats"]}

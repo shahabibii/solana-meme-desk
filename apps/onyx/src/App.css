@@ -630,22 +630,76 @@ h3 {
   color: var(--muted);
 }
 
-.stats-actions {
+.vitals-strip {
   display: flex;
-  gap: 0.5rem;
-  margin: 0.5rem 0 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.45rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: rgba(4, 12, 24, 0.85);
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
 }
 
-.stats-actions button {
-  flex: 1;
-  font-size: 0.65rem;
-  padding: 0.35rem;
+.vitals-strip .vital {
+  color: var(--muted);
+}
+
+.vitals-strip .vital.live {
+  color: var(--live);
+}
+
+.vitals-strip .vital.paper {
+  color: var(--paper);
+}
+
+.vitals-strip .vital.ok {
+  color: var(--ok);
+}
+
+.vitals-strip .vital.bad {
+  color: var(--danger);
+}
+
+.command-deck {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.command-deck h2 {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.deck-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.45rem;
+}
+
+.deck-grid button {
+  font-size: 0.62rem;
+  padding: 0.45rem 0.35rem;
   background: rgba(0, 0, 0, 0.3);
   border: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--cyan);
   border-radius: 6px;
   cursor: pointer;
   font-family: "Orbitron", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.deck-grid button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.deck-grid button:hover:not(:disabled) {
+  border-color: rgba(0, 245, 255, 0.45);
+  box-shadow: 0 0 10px rgba(0, 245, 255, 0.12);
 }
 
 @media (max-width: 900px) {
