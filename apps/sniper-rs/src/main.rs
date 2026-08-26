@@ -17,6 +17,7 @@ use yellowstone_grpc_proto::geyser::{
     CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
 };
 use yellowstone_grpc_proto::prelude::SubscribeRequestPing;
+use tonic::transport::ClientTlsConfig;
 
 const PUMP_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 /// Anchor discriminator for Pump.fun `global:create`
@@ -80,6 +81,7 @@ async fn main() -> Result<()> {
 async fn run_stream(cfg: &Config) -> Result<()> {
     let mut client = GeyserGrpcClient::build_from_shared(cfg.grpc_endpoint.clone())?
         .x_token(Some(cfg.grpc_token.clone()))?
+        .tls_config(ClientTlsConfig::new().with_native_roots())?
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(60))
         .connect()
