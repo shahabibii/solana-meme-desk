@@ -1,0 +1,500 @@
+:root {
+  --bg: #040810;
+  --panel: rgba(8, 16, 32, 0.72);
+  --border: rgba(0, 245, 255, 0.18);
+  --cyan: #00f5ff;
+  --violet: #a78bfa;
+  --text: #e8f4ff;
+  --muted: #6b8fa3;
+  --danger: #ff4d6d;
+  --ok: #3dffaa;
+  --paper: #38bdf8;
+  --live: #f97316;
+  font-family: "Rajdhani", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(ellipse at 50% -20%, #0a1628 0%, var(--bg) 55%);
+}
+
+h1,
+h2,
+h3 {
+  font-family: "Orbitron", sans-serif;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+.onyx-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.grid-bg {
+  position: fixed;
+  inset: 0;
+  background-image: linear-gradient(rgba(0, 245, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 245, 255, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.top-bar,
+.desk-grid,
+.chat-bar,
+.mode-error {
+  position: relative;
+  z-index: 1;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+  background: var(--panel);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.brand-mark {
+  font-size: 2rem;
+  color: var(--cyan);
+  text-shadow: 0 0 24px rgba(0, 245, 255, 0.6);
+}
+
+.brand h1 {
+  font-size: 1.25rem;
+}
+
+.brand p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.mode-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.mode-toggle button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.5rem 1.25rem;
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mode-toggle button.active.paper {
+  background: rgba(56, 189, 248, 0.2);
+  color: var(--paper);
+}
+
+.mode-toggle button.active.live {
+  background: rgba(249, 115, 22, 0.25);
+  color: var(--live);
+}
+
+.wallet-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+.wallet-pill span {
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.wallet-pill strong {
+  font-size: 1.25rem;
+  color: var(--cyan);
+}
+
+.wallet-pill em {
+  font-style: normal;
+  font-size: 0.7rem;
+}
+
+.wallet-pill em.ok {
+  color: var(--ok);
+}
+
+.wallet-pill em.bad {
+  color: var(--danger);
+}
+
+.mode-error {
+  margin: 0;
+  padding: 0.5rem 1.5rem;
+  background: rgba(255, 77, 109, 0.15);
+  color: #ffb3c1;
+  border-bottom: 1px solid rgba(255, 77, 109, 0.3);
+}
+
+.desk-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 200px 1fr 280px;
+  gap: 1px;
+  background: var(--border);
+  min-height: 0;
+}
+
+.agent-rail,
+.center-stage,
+.signal-feed {
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  padding: 1rem;
+  overflow: auto;
+}
+
+.agent-rail h2,
+.signal-feed h2 {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 1rem;
+}
+
+.agent-rail ul,
+.signal-feed ul,
+.positions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agent-rail li.agent {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.agent .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 0.35rem;
+  background: var(--muted);
+}
+
+.agent.running .dot {
+  background: var(--cyan);
+  box-shadow: 0 0 10px var(--cyan);
+  animation: pulse 1s infinite;
+}
+
+.agent.pass .dot {
+  background: var(--ok);
+}
+
+.agent.block .dot {
+  background: var(--danger);
+}
+
+.agent.trade .dot {
+  background: var(--violet);
+}
+
+.agent small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.center-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.mint-chart {
+  width: 100%;
+  max-width: 520px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.mint-chart header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.5rem;
+}
+
+.mint-chart h2 {
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+
+.mint-chart code {
+  font-size: 0.7rem;
+  color: var(--cyan);
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100px;
+}
+
+.chart-line {
+  stroke: var(--cyan);
+  stroke-width: 2;
+}
+
+.onyx-orb-wrap {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.orb-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 245, 255, 0.25);
+}
+
+.ring-1 {
+  inset: 0;
+}
+
+.ring-2 {
+  inset: 12px;
+  border-color: rgba(167, 139, 250, 0.3);
+}
+
+.onyx-orb-wrap.active .ring-1 {
+  animation: spin 8s linear infinite;
+}
+
+.onyx-orb-wrap.active .ring-2 {
+  animation: spin 12s linear infinite reverse;
+}
+
+.orb-core {
+  text-align: center;
+  z-index: 1;
+}
+
+.orb-glyph {
+  font-size: 2.5rem;
+  color: var(--cyan);
+  text-shadow: 0 0 30px rgba(0, 245, 255, 0.8);
+}
+
+.orb-core p {
+  margin: 0.25rem 0 0;
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.85rem;
+}
+
+.orb-core small {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-size: 0.65rem;
+}
+
+.orb-wave {
+  position: absolute;
+  bottom: -8px;
+  width: 140px;
+  height: 24px;
+  opacity: 0.5;
+}
+
+.orb-wave path {
+  fill: none;
+  stroke: var(--violet);
+  stroke-width: 2;
+}
+
+.onyx-orb-wrap.active .orb-wave path {
+  animation: wave 2s ease-in-out infinite;
+}
+
+.positions {
+  width: 100%;
+  max-width: 520px;
+}
+
+.positions h3 {
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.positions li {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  font-size: 0.9rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.positions code {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.signal-feed li {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 0.85rem;
+}
+
+.signal-feed time {
+  display: block;
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+
+.feed-block {
+  color: #ffb3c1;
+}
+
+.feed-fill {
+  color: var(--violet);
+}
+
+.feed-candidate {
+  color: var(--cyan);
+}
+
+.signal-feed .link {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.chat-bar {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  padding: 0.75rem 1.5rem 1rem;
+}
+
+.chat-log {
+  max-height: 4.5rem;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.chat-log p {
+  margin: 0.15rem 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.chat-log p.user strong {
+  color: var(--text);
+}
+
+.chat-log p.onyx strong {
+  color: var(--cyan);
+}
+
+.chat-bar form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.chat-bar input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.85rem;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.chat-bar button {
+  background: linear-gradient(135deg, rgba(0, 245, 255, 0.25), rgba(167, 139, 250, 0.25));
+  border: 1px solid var(--border);
+  color: var(--cyan);
+  border-radius: 8px;
+  padding: 0 1.25rem;
+  font-family: "Orbitron", sans-serif;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    d: path("M0,20 Q25,5 50,20 T100,20 T150,20 T200,20");
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 900px) {
+  .desk-grid {
+    grid-template-columns: 1fr;
+  }
+  .agent-rail {
+    display: none;
+  }
+}

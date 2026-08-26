@@ -1,0 +1,30 @@
+agents:
+  scout:
+    enabled: true
+    sources: [pumpportal, fomo]
+  safety:
+    enabled: true
+    min_score: 65
+    block_honeypot: true
+  copy:
+    enabled: true
+    min_win_rate: 0.70
+    convergence_boost: 15
+  research:
+    enabled: true
+    llm_summaries: false
+  scorer:
+    enabled: true
+    min_entry_score: 72
+  executor:
+    enabled: true
+  learner:
+    enabled: true
+    run_at: "03:00"
+
+fomo:
+  api_base: https://api.cope.capital/v1
+  top_traders_limit: 20
+
+pump:
+  ws_url: wss://pumpportal.fun/api/data
