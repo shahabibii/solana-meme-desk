@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import { connectOnyx, fetchEquityCurve, fetchMode, fetchStatus, setMode } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  chatOnyx,
+  connectOnyx,
+  fetchEquityCurve,
+  fetchIntegrations,
+  fetchMode,
+  fetchStatus,
+  setMode,
+} from "./api";
 import { useDesk, type FeedItem } from "./store";
+import { speakText } from "./voice";
 import AgentRail from "./components/AgentRail";
 import OnyxOrb from "./components/OnyxOrb";
 import SignalFeed from "./components/SignalFeed";
@@ -8,6 +17,7 @@ import MintChart from "./components/MintChart";
 import ChatBar from "./components/ChatBar";
 import EquityCurve from "./components/EquityCurve";
 import StatsPanel from "./components/StatsPanel";
+import IntegrationsPanel from "./components/IntegrationsPanel";
 
 function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
   const ts = String(data.ts ?? new Date().toISOString());
@@ -56,9 +66,17 @@ export default function App() {
   const desk = useDesk();
   const [modeBusy, setModeBusy] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const voiceRef = useRef(voiceEnabled);
+  voiceRef.current = voiceEnabled;
+  const [listening, setListening] = useState(false);
   const [chatLog, setChatLog] = useState<{ role: string; text: string }[]>([
     { role: "onyx", text: "Solana meme desk online. Paper mode active — agents streaming." },
   ]);
+
+  function say(text: string) {
+    speakText(text, voiceRef.current);
+  }
 
   useEffect(() => {
     void fetchStatus().then((s) => desk.applyStatus(s));
@@ -66,6 +84,9 @@ export default function App() {
       desk.setMode(m.mode);
       desk.setLiveReady(m.live_ready);
     });
+    void fetchIntegrations().then((i) =>
+      desk.applyStatus({ integrations: i.integrations })
+    );
     void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
     const iv = setInterval(() => {
       void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
@@ -81,7 +102,10 @@ export default function App() {
     const connect = () => {
       ws = connectOnyx((data) => {
         if (data.type === "desk.status") desk.applyStatus(data);
-        if (data.type === "desk.mode") desk.setMode(data.mode as "paper" | "live");
+        if (data.type === "desk.mode") {
+          desk.setMode(data.mode as "paper" | "live");
+          say(`Desk mode ${data.mode}`);
+        }
         if (data.type === "agent.start" && data.agent)
           desk.setAgentRunning(String(data.agent));
         if (data.type === "agent.done" && data.agent)
@@ -90,6 +114,12 @@ export default function App() {
           desk.selectMint(String(data.mint));
         if (data.type === "position.update")
           desk.pushChart(Number(data.upnl_pct ?? 50));
+        if (data.type === "trade.fill") {
+          say(`${data.side} fill ${data.sol} SOL`);
+        }
+        if (data.type === "mint.blocked") {
+          say("Mint blocked by safety");
+        }
         const item = feedFromEvent(data);
         if (item) desk.pushFeed(item);
       });
@@ -111,7 +141,7 @@ export default function App() {
     const next = desk.mode === "paper" ? "live" : "paper";
     if (next === "live") {
       const ok = window.confirm(
-        "Switch to LIVE mode? Real SOL will be at risk once execution is wired. Continue?"
+        "Switch to LIVE mode? Real SOL will be at risk. Continue?"
       );
       if (!ok) return;
     }
@@ -119,11 +149,29 @@ export default function App() {
     try {
       await setMode(next, next === "live");
       desk.setMode(next);
-      setChatLog((l) => [...l, { role: "onyx", text: `Mode set to ${next.toUpperCase()}.` }]);
+      const msg = `Mode set to ${next.toUpperCase()}.`;
+      setChatLog((l) => [...l, { role: "onyx", text: msg }]);
+      say(msg);
     } catch (e) {
       setModeError(e instanceof Error ? e.message : "Mode switch failed");
     } finally {
       setModeBusy(false);
+    }
+  }
+
+  async function handleChat(text: string) {
+    setChatLog((l) => [...l, { role: "user", text }]);
+    try {
+      const { reply } = await chatOnyx(text);
+      setChatLog((l) => [...l, { role: "onyx", text: reply }]);
+      say(reply);
+    } catch {
+      const lower = text.toLowerCase();
+      let reply = "Monitoring agents. Ask: status, mode, keys, backtest.";
+      if (lower.includes("status"))
+        reply = `${desk.mode.toUpperCase()} · ${desk.equitySol.toFixed(3)} SOL · ${desk.positions.length} open`;
+      setChatLog((l) => [...l, { role: "onyx", text: reply }]);
+      say(reply);
     }
   }
 
@@ -158,7 +206,7 @@ export default function App() {
             className={desk.mode === "live" ? "active live" : ""}
             onClick={() => desk.mode !== "live" && void toggleMode()}
             disabled={modeBusy}
-            title={!desk.liveReady ? "Live needs SOLANA_PRIVATE_KEY — toggle to see setup error" : undefined}
+            title={!desk.liveReady ? "Live needs SOLANA_PRIVATE_KEY" : undefined}
           >
             Live
           </button>
@@ -203,6 +251,7 @@ export default function App() {
           </div>
         </section>
         <aside className="right-col">
+          <IntegrationsPanel integrations={desk.integrations} />
           <StatsPanel
             stats={desk.stats as Parameters<typeof StatsPanel>[0]["stats"]}
             weights={desk.learnerWeights}
@@ -214,19 +263,12 @@ export default function App() {
 
       <ChatBar
         log={chatLog}
-        onSend={(text) => {
-          setChatLog((l) => [...l, { role: "user", text }]);
-          const lower = text.toLowerCase();
-          let reply = "Monitoring agents. Ask: status, mode, last block.";
-          if (lower.includes("status"))
-            reply = `${desk.mode.toUpperCase()} · ${desk.equitySol.toFixed(3)} SOL · ${desk.positions.length} open · stream ${desk.connected ? "ok" : "down"}`;
-          if (lower.includes("paper")) reply = "Paper mode simulates fills on the bonding curve.";
-          if (lower.includes("live"))
-            reply = desk.liveReady
-              ? "Live path ready — toggle Live when you are armed."
-              : "Live needs SOLANA_PRIVATE_KEY in orchestrator .env.";
-          setChatLog((l) => [...l, { role: "onyx", text: reply }]);
-        }}
+        onSend={(t) => void handleChat(t)}
+        voiceEnabled={voiceEnabled}
+        onToggleVoice={() => setVoiceEnabled((v) => !v)}
+        listening={listening}
+        onListenStart={() => setListening(true)}
+        onListenEnd={() => setListening(false)}
       />
     </div>
   );

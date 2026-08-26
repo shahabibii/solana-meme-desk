@@ -1,28 +1,45 @@
 services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
   orchestrator:
     build:
-      context: ./apps/orchestrator
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8787:8787"
     environment:
-      REDIS_URL: redis://redis:6379
       DESK_MODE: paper
-    depends_on:
-      - redis
+      DATA_DIR: /data
+      CONFIG_DIR: /config
+      STATIC_DIR: /app/static
+      SNIPER_INGEST_SECRET: ${SNIPER_INGEST_SECRET:-local-dev-secret}
     volumes:
-      - ./config:/config:ro
+      - desk_data:/data
 
-  onyx:
+  # Fallback sniper (PumpPortal WS) — use when no Helius gRPC key
+  sniper-py:
     build:
-      context: ./apps/onyx
-    ports:
-      - "5173:5173"
+      context: .
+      dockerfile: apps/sniper/Dockerfile
     environment:
-      VITE_API_BASE: http://localhost:8787
+      ORCHESTRATOR_URL: http://orchestrator:8787
+      SNIPER_INGEST_SECRET: ${SNIPER_INGEST_SECRET:-local-dev-secret}
+      PUMPPORTAL_API_KEY: ${PUMPPORTAL_API_KEY:-}
     depends_on:
       - orchestrator
+    profiles:
+      - fallback
+
+  # Primary sniper (Yellowstone gRPC) — best latency
+  sniper-rs:
+    build:
+      context: .
+      dockerfile: apps/sniper-rs/Dockerfile
+    environment:
+      HELIUS_API_KEY: ${HELIUS_API_KEY:?Set HELIUS_API_KEY for Yellowstone sniper}
+      YELLOWSTONE_GRPC_ENDPOINT: ${YELLOWSTONE_GRPC_ENDPOINT:-https://grpc.helius-rpc.com}
+      ORCHESTRATOR_URL: http://orchestrator:8787
+      SNIPER_INGEST_SECRET: ${SNIPER_INGEST_SECRET:-local-dev-secret}
+    depends_on:
+      - orchestrator
+
+volumes:
+  desk_data:

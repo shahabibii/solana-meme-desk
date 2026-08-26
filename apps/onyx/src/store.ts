@@ -43,6 +43,7 @@ type DeskState = {
   equityPoints: { ts: string; equity_sol: number }[];
   learnerWeights: Record<string, number>;
   fomoEnabled: boolean;
+  integrations: Record<string, { active?: boolean; ready?: boolean }> | null;
   setMode: (m: DeskMode) => void;
   setLiveReady: (v: boolean) => void;
   setConnected: (v: boolean) => void;
@@ -81,6 +82,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   equityPoints: [],
   learnerWeights: { pump: 1, fomo: 1, convergence: 1.2 },
   fomoEnabled: false,
+  integrations: null,
   setMode: (m) => set({ mode: m }),
   setLiveReady: (v) => set({ liveReady: v }),
   setConnected: (v) => set({ connected: v }),
@@ -98,6 +100,8 @@ export const useDesk = create<DeskState>((set, get) => ({
     if (p.learner_weights)
       set({ learnerWeights: p.learner_weights as Record<string, number> });
     if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
+    if (p.integrations)
+      set({ integrations: p.integrations as Record<string, { active?: boolean }> });
   },
   pushFeed: (item) =>
     set((s) => ({ feed: [item, ...s.feed].slice(0, 80) })),

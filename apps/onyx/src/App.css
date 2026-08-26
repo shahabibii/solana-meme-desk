@@ -591,6 +591,63 @@ h3 {
   }
 }
 
+.chat-bar button.mic,
+.chat-bar button.voice-toggle {
+  padding: 0 0.65rem;
+  min-width: 2.5rem;
+}
+
+.chat-bar button.mic.active {
+  border-color: var(--cyan);
+  box-shadow: 0 0 12px rgba(0, 245, 255, 0.35);
+}
+
+.integrations-panel {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.integrations-panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+}
+
+.integrations-panel li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  padding: 0.2rem 0;
+  text-transform: capitalize;
+}
+
+.integrations-panel li.on em {
+  color: var(--green);
+}
+
+.integrations-panel li.off em {
+  color: var(--muted);
+}
+
+.stats-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.stats-actions button {
+  flex: 1;
+  font-size: 0.65rem;
+  padding: 0.35rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: "Orbitron", sans-serif;
+}
+
 @media (max-width: 900px) {
   .desk-grid {
     grid-template-columns: 1fr;

@@ -59,7 +59,7 @@ async def run_safety(mint: str, settings: Settings) -> SafetyReport:
     checks: dict[str, bool] = {}
     score = 100
 
-    info = await _rpc_get_mint_info(settings.solana_rpc_url, mint)
+    info = await _rpc_get_mint_info(settings.effective_rpc_url, mint)
     if info is None:
         checks["mint_account"] = False
         reasons.append("mint_account_missing")

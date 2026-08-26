@@ -1,13 +1,39 @@
 import { useState } from "react";
+import { startListening, voiceSupport } from "../voice";
 
 export default function ChatBar({
   log,
   onSend,
+  voiceEnabled,
+  onToggleVoice,
+  listening,
+  onListenStart,
+  onListenEnd,
 }: {
   log: { role: string; text: string }[];
   onSend: (text: string) => void;
+  voiceEnabled: boolean;
+  onToggleVoice: () => void;
+  listening: boolean;
+  onListenStart: () => void;
+  onListenEnd: () => void;
 }) {
   const [input, setInput] = useState("");
+  const support = voiceSupport();
+
+  function handleVoice() {
+    if (listening) return;
+    onListenStart();
+    const session = startListening({
+      onFinal: (text) => {
+        onSend(text);
+        onListenEnd();
+      },
+      onError: () => onListenEnd(),
+      onEnd: () => onListenEnd(),
+    });
+    if (!session) onListenEnd();
+  }
 
   return (
     <footer className="chat-bar">
@@ -27,10 +53,30 @@ export default function ChatBar({
           setInput("");
         }}
       >
+        <button
+          type="button"
+          className={`voice-toggle ${voiceEnabled ? "on" : ""}`}
+          onClick={onToggleVoice}
+          title={voiceEnabled ? "Mute Onyx voice" : "Enable Onyx voice"}
+          aria-pressed={voiceEnabled}
+        >
+          {voiceEnabled ? "🔊" : "🔇"}
+        </button>
+        {support.listen && (
+          <button
+            type="button"
+            className={listening ? "mic active" : "mic"}
+            onClick={handleVoice}
+            disabled={listening}
+            title="Voice command"
+          >
+            {listening ? "…" : "🎤"}
+          </button>
+        )}
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask Onyx — status, mode, why blocked…"
+          placeholder="Ask Onyx — status, mode, keys, backtest…"
           aria-label="Chat with Onyx"
         />
         <button type="submit">Send</button>

@@ -34,6 +34,27 @@ export async function runLearner(): Promise<{ weights: Record<string, number> }>
   return r.json();
 }
 
+export async function runBacktest(): Promise<Record<string, unknown>> {
+  const r = await fetch(`${BASE}/api/backtest/run`, { method: "POST" });
+  return r.json();
+}
+
+export async function fetchIntegrations(): Promise<{
+  integrations: Record<string, { active?: boolean; ready?: boolean }>;
+}> {
+  const r = await fetch(`${BASE}/api/integrations`);
+  return r.json();
+}
+
+export async function chatOnyx(text: string): Promise<{ reply: string }> {
+  const r = await fetch(`${BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return r.json();
+}
+
 export async function setMode(mode: DeskMode, confirm = false): Promise<void> {
   const r = await fetch(`${BASE}/api/mode`, {
     method: "PATCH",

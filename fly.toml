@@ -1,0 +1,43 @@
+# fly.toml — production (always-on desk + optional sniper worker)
+# Secrets: fly secrets set HELIUS_API_KEY=... SNIPER_INGEST_SECRET=... (never commit keys)
+app = "solana-meme-desk"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DESK_MODE = "paper"
+  PORT = "8787"
+  DATA_DIR = "/data"
+  CONFIG_DIR = "/config"
+  STATIC_DIR = "/app/static"
+  MOCK_STREAM = "false"
+  YELLOWSTONE_GRPC_ENDPOINT = "https://grpc.helius-rpc.com"
+  ORCHESTRATOR_URL = "http://127.0.0.1:8787"
+
+[processes]
+  web = "uvicorn orchestrator.main:app --host 0.0.0.0 --port 8787"
+  sniper = "/app/meme-sniper-rs"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["web"]
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[mounts]
+  source = "desk_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+# Scale sniper after deploy (needs HELIUS_API_KEY secret):
+#   fly secrets set HELIUS_API_KEY=... SNIPER_INGEST_SECRET=...
+#   fly scale count sniper=1 web=1

@@ -1,9 +1,9 @@
 [project]
 name = "solana-meme-desk-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Onyx agent orchestrator for Solana meme coin desk"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
@@ -13,10 +13,12 @@ dependencies = [
   "httpx>=0.27",
   "structlog>=24.1",
   "websockets>=12.0",
+  "solders>=0.21",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "respx>=0.21"]
+backtest = ["pandas>=2.0", "numpy>=1.26", "vectorbt>=0.26"]
 
 [build-system]
 requires = ["setuptools>=69"]

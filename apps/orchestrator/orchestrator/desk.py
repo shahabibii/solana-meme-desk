@@ -65,6 +65,7 @@ class DeskRuntime:
         self._seen: set[str] = set()
         self._processing: set[str] = set()
         self._min_score = settings.entry_min_score
+        self._live_tracks: dict[str, dict] = {}
 
     async def enqueue(self, candidate: MintCandidate) -> None:
         if candidate.mint in self._seen or candidate.mint in self._processing:
@@ -74,6 +75,27 @@ class DeskRuntime:
             return
         await self._queue.put(candidate)
 
+    async def ingest_candidate(
+        self,
+        *,
+        mint: str,
+        symbol: str = "SNIP",
+        name: str = "",
+        source: str = "sniper",
+        copy_boost: int = 0,
+    ) -> bool:
+        if len(mint) < 32:
+            return False
+        cand = MintCandidate(
+            mint=mint,
+            symbol=symbol[:16],
+            name=(name or symbol)[:64],
+            source=source,
+            copy_boost=copy_boost,
+        )
+        await self.enqueue(cand)
+        return True
+
     async def _on_pump(self, candidate: MintCandidate) -> None:
         await self.enqueue(candidate)
 
@@ -82,7 +104,7 @@ class DeskRuntime:
             if self.cope.enabled:
                 for c in await self.cope.poll_candidates():
                     await self.enqueue(c)
-            await asyncio.sleep(60)
+            await asyncio.sleep(self.settings.cope_poll_sec)
 
     async def pipeline_worker(self, get_mode: Callable[[], DeskMode], running: Callable[[], bool]) -> None:
         while running():
@@ -106,11 +128,9 @@ class DeskRuntime:
         mint = candidate.mint
         await self.broadcast(ev.mint_candidate(mint, candidate.source, candidate.symbol))
 
-        # Scout
         t0 = time.perf_counter()
         await self._agent_step("scout", mint, "PASS", int((time.perf_counter() - t0) * 1000))
 
-        # Safety
         report = await run_safety(mint, self.settings)
         await self._agent_step("safety", mint, report.verdict, report.ms, ";".join(report.reasons))
         if not report.passed:
@@ -118,15 +138,12 @@ class DeskRuntime:
             await self.broadcast(ev.mint_blocked(mint, report.reasons))
             return
 
-        # Copy
         copy_verdict = "BOOST" if candidate.copy_boost else "NEUTRAL"
         await self._agent_step("copy", mint, copy_verdict, 40)
 
-        # Research (thesis stub — fomo meta if present)
         thesis = "pump_launch" if candidate.source == "pump" else candidate.source
         await self._agent_step("research", mint, "PASS", 35, thesis)
 
-        # Scorer
         weights = self.journal.get_weights()
         scored = score_candidate(candidate, report, weights, min_score=self._min_score)
         await self._agent_step(
@@ -139,8 +156,9 @@ class DeskRuntime:
         if not scored.trade:
             return
 
-        # Executor
         sol = min(self.paper.limits.max_position_sol, self.paper.cash_sol * 0.1)
+        if mode == DeskMode.LIVE and self.live.ready:
+            sol = min(self.paper.limits.max_position_sol, sol)
         if sol <= 0.001:
             await self._agent_step("executor", mint, "INSUFFICIENT", 10)
             return
@@ -177,72 +195,142 @@ class DeskRuntime:
         else:
             if self.live.ready:
                 try:
-                    await self.live.buy(mint, sol)
+                    result = await self.live.buy(mint, sol)
+                    sig = result.get("signature", "")
+                    self.journal.record_trade(
+                        mint=mint,
+                        symbol=candidate.symbol,
+                        side="buy",
+                        sol=sol,
+                        pnl_pct=None,
+                        mode="live",
+                        source=candidate.source,
+                        safety_score=report.score,
+                        detail={"signature": sig, **result},
+                    )
+                    self._live_tracks[mint] = {
+                        "symbol": candidate.symbol,
+                        "entry_sol": sol,
+                        "entry_ts": datetime.now(timezone.utc),
+                        "source": candidate.source,
+                        "peak_pnl_pct": 0.0,
+                        "entry_price": price or 0.0001,
+                    }
                     await self.broadcast(ev.trade_fill("buy", mint, sol, "live"))
-                    await self._agent_step("executor", mint, "SUBMITTED", 200)
+                    await self._agent_step("executor", mint, "SUBMITTED", 200, sig[:16] if sig else None)
                 except Exception as exc:
-                    await self._agent_step("executor", mint, "ERROR", 50, str(exc))
+                    await self._agent_step("executor", mint, "ERROR", 50, str(exc)[:120])
             else:
                 await self._agent_step(
                     "executor", mint, "NOT_CONFIGURED", 30, "SOLANA_PRIVATE_KEY"
                 )
 
-    async def monitor_positions(self, running: Callable[[], bool]) -> None:
+    async def monitor_positions(self, get_mode: Callable[[], DeskMode], running: Callable[[], bool]) -> None:
         """Mark-to-market + TP/SL/trail/max-hold exits."""
         while running():
-            for mint in list(self.paper.positions.keys()):
-                p = self.paper.positions.get(mint)
-                if not p:
-                    continue
-                price = await token_price_usd(mint)
-                if price:
-                    self.paper.mark_price(mint, price)
-                pct = self.paper.pnl_pct(mint)
-                if pct is None:
-                    continue
-                p.peak_pnl_pct = max(p.peak_pnl_pct, pct)
-                await self.broadcast(ev.position_update(mint, round(pct, 2)))
-
-                lim = self.paper.limits
-                hold_min = (datetime.now(timezone.utc) - p.entry_ts).total_seconds() / 60.0
-                exit_reason: str | None = None
-                fraction = 1.0
-
-                if pct <= -lim.stop_loss_pct:
-                    exit_reason = "stop_loss"
-                elif hold_min >= lim.max_hold_minutes:
-                    exit_reason = "max_hold"
-                elif p.peak_pnl_pct >= lim.trailing_activate_pct:
-                    if pct <= p.peak_pnl_pct - lim.trailing_distance_pct:
-                        exit_reason = "trailing_stop"
-                else:
-                    for i, tp in enumerate(lim.take_profit_pct):
-                        if pct >= tp and i < len(lim.take_profit_sell_pct):
-                            exit_reason = f"take_profit_{tp}"
-                            fraction = lim.take_profit_sell_pct[i] / 100.0
-                            break
-
-                if exit_reason:
-                    result = self.paper.sell(mint, fraction)
-                    if result:
-                        proceeds, closed_pct = result
-                        self.journal.record_trade(
-                            mint=mint,
-                            symbol=p.symbol,
-                            side="sell",
-                            sol=proceeds,
-                            pnl_pct=closed_pct,
-                            mode="paper",
-                            source=p.source,
-                            detail={"exit": exit_reason},
-                        )
-                        self.journal.record_equity(self.paper.equity_sol)
-                        await self.broadcast(
-                            ev.trade_fill("sell", mint, round(proceeds, 4), "paper")
-                        )
-                        await self.broadcast(ev.status_snapshot({"wallet": self.paper.to_dict()}))
-
+            mode = get_mode()
+            if mode == DeskMode.PAPER:
+                await self._monitor_paper()
+            elif mode == DeskMode.LIVE and self.live.ready:
+                await self._monitor_live()
             await asyncio.sleep(10)
+
+    async def _monitor_paper(self) -> None:
+        for mint in list(self.paper.positions.keys()):
+            p = self.paper.positions.get(mint)
+            if not p:
+                continue
+            price = await token_price_usd(mint)
+            if price:
+                self.paper.mark_price(mint, price)
+            pct = self.paper.pnl_pct(mint)
+            if pct is None:
+                continue
+            p.peak_pnl_pct = max(p.peak_pnl_pct, pct)
+            await self.broadcast(ev.position_update(mint, round(pct, 2)))
+
+            lim = self.paper.limits
+            hold_min = (datetime.now(timezone.utc) - p.entry_ts).total_seconds() / 60.0
+            exit_reason, fraction = self._exit_signal(pct, p.peak_pnl_pct, hold_min, lim)
+
+            if exit_reason:
+                result = self.paper.sell(mint, fraction)
+                if result:
+                    proceeds, closed_pct = result
+                    self.journal.record_trade(
+                        mint=mint,
+                        symbol=p.symbol,
+                        side="sell",
+                        sol=proceeds,
+                        pnl_pct=closed_pct,
+                        mode="paper",
+                        source=p.source,
+                        detail={"exit": exit_reason},
+                    )
+                    self.journal.record_equity(self.paper.equity_sol)
+                    await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "paper"))
+                    await self.broadcast(ev.status_snapshot({"wallet": self.paper.to_dict()}))
+
+    async def _monitor_live(self) -> None:
+        lim = self.paper.limits
+        for mint in list(self._live_tracks.keys()):
+            track = self._live_tracks.get(mint)
+            if not track:
+                continue
+            price = await token_price_usd(mint)
+            entry_px = float(track.get("entry_price") or 0.0001)
+            if not price or entry_px <= 0:
+                continue
+            pct = ((price / entry_px) - 1.0) * 100.0
+            track["peak_pnl_pct"] = max(float(track.get("peak_pnl_pct", 0)), pct)
+            await self.broadcast(ev.position_update(mint, round(pct, 2)))
+
+            hold_min = (datetime.now(timezone.utc) - track["entry_ts"]).total_seconds() / 60.0
+            exit_reason, fraction = self._exit_signal(
+                pct, float(track["peak_pnl_pct"]), hold_min, lim
+            )
+            if not exit_reason:
+                continue
+            try:
+                result = await self.live.sell(mint, fraction)
+                sig = result.get("signature", "")
+                proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
+                self.journal.record_trade(
+                    mint=mint,
+                    symbol=str(track["symbol"]),
+                    side="sell",
+                    sol=proceeds,
+                    pnl_pct=pct,
+                    mode="live",
+                    source=str(track.get("source") or "pump"),
+                    detail={"exit": exit_reason, "signature": sig},
+                )
+                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
+                if fraction >= 1.0:
+                    self._live_tracks.pop(mint, None)
+                else:
+                    track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _exit_signal(
+        pct: float,
+        peak_pnl_pct: float,
+        hold_min: float,
+        lim: RiskLimits,
+    ) -> tuple[str | None, float]:
+        if pct <= -lim.stop_loss_pct:
+            return "stop_loss", 1.0
+        if hold_min >= lim.max_hold_minutes:
+            return "max_hold", 1.0
+        if peak_pnl_pct >= lim.trailing_activate_pct:
+            if pct <= peak_pnl_pct - lim.trailing_distance_pct:
+                return "trailing_stop", 1.0
+        for i, tp in enumerate(lim.take_profit_pct):
+            if pct >= tp and i < len(lim.take_profit_sell_pct):
+                return f"take_profit_{tp}", lim.take_profit_sell_pct[i] / 100.0
+        return None, 1.0
 
 
 async def start_desk(
@@ -253,7 +341,7 @@ async def start_desk(
     journal: JournalStore,
     broadcast: Broadcast,
     running: Callable[[], bool],
-) -> list[asyncio.Task]:
+) -> tuple[DeskRuntime, list[asyncio.Task]]:
     desk = DeskRuntime(settings, paper, live, journal, broadcast)
     tasks = [
         asyncio.create_task(
@@ -265,7 +353,7 @@ async def start_desk(
         ),
         asyncio.create_task(desk.cope_poller(running)),
         asyncio.create_task(desk.pipeline_worker(get_mode, running)),
-        asyncio.create_task(desk.monitor_positions(running)),
+        asyncio.create_task(desk.monitor_positions(get_mode, running)),
     ]
     if settings.mock_stream:
         from orchestrator.agents.pipeline import mock_stream_loop
@@ -275,4 +363,4 @@ async def start_desk(
                 mock_stream_loop(settings, get_mode, paper, live, broadcast, running)
             )
         )
-    return tasks
+    return desk, tasks
