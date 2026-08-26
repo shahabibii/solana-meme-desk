@@ -13,7 +13,7 @@ primary_region = "iad"
   CONFIG_DIR = "/config"
   STATIC_DIR = "/app/static"
   MOCK_STREAM = "false"
-  YELLOWSTONE_GRPC_ENDPOINT = "https://grpc.helius-rpc.com"
+  YELLOWSTONE_GRPC_ENDPOINT = "https://laserstream-mainnet-ewr.helius-rpc.com"
   ORCHESTRATOR_URL = "http://127.0.0.1:8787"
 
 [processes]

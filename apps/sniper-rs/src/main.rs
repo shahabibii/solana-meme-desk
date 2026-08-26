@@ -41,7 +41,7 @@ struct Config {
 impl Config {
     fn from_env() -> Result<Self> {
         let grpc_endpoint = env::var("YELLOWSTONE_GRPC_ENDPOINT").unwrap_or_else(|_| {
-            "https://grpc.helius-rpc.com".to_string()
+            "https://laserstream-mainnet-ewr.helius-rpc.com".to_string()
         });
         let grpc_token = env::var("YELLOWSTONE_GRPC_X_TOKEN")
             .or_else(|_| env::var("HELIUS_API_KEY"))

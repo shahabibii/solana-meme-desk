@@ -18,6 +18,19 @@ TRADE_LOCAL = "https://pumpportal.fun/api/trade-local"
 LIGHTNING = "https://pumpportal.fun/api/trade"
 
 
+def _load_keypair(raw: str) -> Keypair:
+    """Accept base58 secret or JSON byte array (Phantom export)."""
+    text = raw.strip().strip('"').strip("'")
+    if text.startswith("["):
+        import json
+
+        data = json.loads(text)
+        if not isinstance(data, list):
+            raise ValueError("JSON key must be a byte array")
+        return Keypair.from_bytes(bytes(int(x) for x in data))
+    return Keypair.from_base58_string(text)
+
+
 class LiveExecutor:
     """PumpPortal local (non-custodial) or lightning (API key) execution."""
 
@@ -26,7 +39,7 @@ class LiveExecutor:
         self._keypair: Keypair | None = None
         if settings.solana_private_key:
             try:
-                self._keypair = Keypair.from_base58_string(settings.solana_private_key.strip())
+                self._keypair = _load_keypair(settings.solana_private_key)
             except Exception as exc:
                 log.warning("Invalid SOLANA_PRIVATE_KEY: %s", exc)
 
