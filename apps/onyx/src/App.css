@@ -702,6 +702,58 @@ h3 {
   box-shadow: 0 0 10px rgba(0, 245, 255, 0.12);
 }
 
+.trade-history,
+.sniper-health {
+  background: var(--panel);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-history h2,
+.sniper-health h2 {
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+.trade-history ul,
+.sniper-health ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.trade-history li,
+.sniper-health li {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.trade-history time {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.trade-history em {
+  color: var(--muted);
+  font-style: normal;
+  margin-left: auto;
+}
+
+.sniper-health li.on em {
+  color: var(--ok);
+}
+
+.sniper-health li.off em {
+  color: var(--danger);
+}
+
 @media (max-width: 900px) {
   .desk-grid {
     grid-template-columns: 1fr;

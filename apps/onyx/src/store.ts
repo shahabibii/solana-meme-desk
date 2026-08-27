@@ -43,6 +43,8 @@ type DeskState = {
   equityPoints: { ts: string; equity_sol: number }[];
   learnerWeights: Record<string, number>;
   fomoEnabled: boolean;
+  onChainSol: number | null;
+  sniperHealth: Record<string, unknown> | null;
   integrations: Record<string, { active?: boolean; ready?: boolean }> | null;
   setMode: (m: DeskMode) => void;
   setLiveReady: (v: boolean) => void;
@@ -80,8 +82,10 @@ export const useDesk = create<DeskState>((set, get) => ({
   busyAgent: null,
   stats: null,
   equityPoints: [],
-  learnerWeights: { pump: 1, fomo: 1, convergence: 1.2 },
+  learnerWeights: { pump: 1, fomo: 1, convergence: 1.2, copy: 1.15 },
   fomoEnabled: false,
+  onChainSol: null,
+  sniperHealth: null,
   integrations: null,
   setMode: (m) => set({ mode: m }),
   setLiveReady: (v) => set({ liveReady: v }),
@@ -93,6 +97,8 @@ export const useDesk = create<DeskState>((set, get) => ({
         equitySol: Number(wallet.equity_sol ?? get().equitySol),
         cashSol: Number(wallet.cash_sol ?? get().cashSol),
         positions: (wallet.positions as Position[]) ?? [],
+        onChainSol:
+          wallet.on_chain_sol != null ? Number(wallet.on_chain_sol) : get().onChainSol,
       });
     }
     if (typeof p.mode === "string") set({ mode: p.mode as DeskMode });
@@ -100,6 +106,7 @@ export const useDesk = create<DeskState>((set, get) => ({
     if (p.learner_weights)
       set({ learnerWeights: p.learner_weights as Record<string, number> });
     if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
+    if (p.sniper_health) set({ sniperHealth: p.sniper_health as Record<string, unknown> });
     if (p.integrations)
       set({ integrations: p.integrations as Record<string, { active?: boolean }> });
   },

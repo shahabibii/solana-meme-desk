@@ -1,6 +1,47 @@
 import type { DeskMode } from "./store";
 
+export type VoiceConfig = {
+  name: string;
+  label: string;
+  voice_id?: string;
+  provider: "elevenlabs" | "browser";
+  active: boolean;
+  preview_url: string;
+};
+
 const BASE = "";
+
+export async function fetchVoiceConfig(): Promise<VoiceConfig> {
+  const r = await fetch(`${BASE}/api/voice`);
+  if (!r.ok) {
+    return {
+      name: "Maisie",
+      label: "Maisie — friendly casual neighbor",
+      provider: "browser",
+      active: false,
+      preview_url: "/voices/maisie-preview.mp3",
+    };
+  }
+  return r.json();
+}
+
+export async function synthesizeSpeech(text: string): Promise<Blob> {
+  const r = await fetch(`${BASE}/api/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.blob();
+}
+
+export async function fetchTrades(limit = 20): Promise<{ trades: Record<string, unknown>[] }> {
+  const r = await fetch(`${BASE}/api/trades?limit=${limit}`);
+  return r.json();
+}
 
 export async function fetchStatus(): Promise<Record<string, unknown>> {
   const r = await fetch(`${BASE}/api/status`);

@@ -1,0 +1,13 @@
+# Wallets to mirror via PumpPortal subscribeAccountTrade.
+# Cope /fomo top-trader poll fills this list when COPE_API_KEY is set.
+# Add known profitable wallets manually as fallback.
+
+copy:
+  enabled: true
+  min_trader_sol: 0.02
+  copy_ratio: 0.25
+  max_wallets: 20
+  copy_boost: 25
+  min_trader_win_rate: 0.55
+
+wallets: []

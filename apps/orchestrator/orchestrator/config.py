@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     sniper_ingest_secret: str | None = None
     orchestrator_url: str = "http://127.0.0.1:8787"
 
+    # Onyx voice (ElevenLabs Maisie)
+    elevenlabs_api_key: str | None = None
+    elevenlabs_voice_id: str = "QtY3JBOUKEB5xzrRfOKc"
+    elevenlabs_model: str = "eleven_flash_v2_5"
+
+    # Deep safety + research
+    rugcheck_enabled: bool = True
+    openai_api_key: str | None = None
+    research_llm_enabled: bool = False
+    openai_model: str = "gpt-4o-mini"
+
     @field_validator("static_dir", mode="before")
     @classmethod
     def _empty_static_none(cls, v: object) -> Path | None:
@@ -97,6 +108,9 @@ class Settings(BaseSettings):
             "jito": bool(self.use_jito and self.jito_block_engine_url),
             "sniper_ingest": bool(self.sniper_ingest_secret),
             "mock_stream": self.mock_stream,
+            "elevenlabs_tts": bool(self.elevenlabs_api_key),
+            "rugcheck": self.rugcheck_enabled,
+            "research_llm": bool(self.openai_api_key and self.research_llm_enabled),
         }
 
 

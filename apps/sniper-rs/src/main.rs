@@ -1,9 +1,9 @@
 //! Yellowstone gRPC sniper — Pump.fun create txs → orchestrator ingest API.
-//!
-//! Requires a Dragon's Mouth compatible endpoint (Helius, Triton, QuickNode, etc.)
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -20,8 +20,8 @@ use yellowstone_grpc_proto::prelude::SubscribeRequestPing;
 use tonic::transport::ClientTlsConfig;
 
 const PUMP_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-/// Anchor discriminator for Pump.fun `global:create`
 const CREATE_DISCRIMINATOR: [u8; 8] = [24, 30, 200, 40, 5, 28, 7, 119];
+const WORKER: &str = "yellowstone";
 
 #[derive(Serialize)]
 struct IngestBody<'a> {
@@ -32,11 +32,20 @@ struct IngestBody<'a> {
     copy_boost: i32,
 }
 
+#[derive(Serialize)]
+struct HeartbeatBody<'a> {
+    worker: &'a str,
+    status: &'a str,
+    detail: Option<&'a str>,
+    ingests: Option<u64>,
+}
+
 struct Config {
     grpc_endpoint: String,
     grpc_token: String,
     orchestrator_url: String,
     ingest_secret: Option<String>,
+    plan_backoff_sec: u64,
 }
 
 impl Config {
@@ -52,11 +61,16 @@ impl Config {
             .trim_end_matches('/')
             .to_string();
         let ingest_secret = env::var("SNIPER_INGEST_SECRET").ok();
+        let plan_backoff_sec = env::var("SNIPER_PLAN_BACKOFF_SEC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
         Ok(Self {
             grpc_endpoint,
             grpc_token,
             orchestrator_url,
             ingest_secret,
+            plan_backoff_sec,
         })
     }
 }
@@ -70,15 +84,55 @@ async fn main() -> Result<()> {
         cfg.orchestrator_url, cfg.grpc_endpoint
     );
 
+    let http = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    let ingests = Arc::new(AtomicU64::new(0));
+    let hb_http = http.clone();
+    let hb_cfg = cfg.orchestrator_url.clone();
+    let hb_secret = cfg.ingest_secret.clone();
+    let hb_ingests = ingests.clone();
+    tokio::spawn(async move {
+        loop {
+            let n = hb_ingests.load(Ordering::Relaxed);
+            let _ = post_heartbeat(
+                &hb_http,
+                &hb_cfg,
+                hb_secret.as_deref(),
+                "ok",
+                Some("streaming"),
+                Some(n),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_secs(45)).await;
+        }
+    });
+
     loop {
-        if let Err(e) = run_stream(&cfg).await {
-            warn!("stream error: {e:#}; reconnecting in 5s");
-            tokio::time::sleep(Duration::from_secs(5)).await;
+        if let Err(e) = run_stream(&cfg, &http, &ingests).await {
+            let msg = format!("{e:#}");
+            let plan_err = msg.to_lowercase().contains("unsupported plan")
+                || msg.to_lowercase().contains("plan type");
+            let status = if plan_err { "error" } else { "degraded" };
+            warn!("stream error: {msg}; status={status}");
+            let _ = post_heartbeat(
+                &http,
+                &cfg.orchestrator_url,
+                cfg.ingest_secret.as_deref(),
+                status,
+                Some(&msg),
+                Some(ingests.load(Ordering::Relaxed)),
+            )
+            .await;
+            let wait = if plan_err {
+                cfg.plan_backoff_sec
+            } else {
+                5
+            };
+            tokio::time::sleep(Duration::from_secs(wait)).await;
         }
     }
 }
 
-async fn run_stream(cfg: &Config) -> Result<()> {
+async fn run_stream(cfg: &Config, http: &Client, ingests: &AtomicU64) -> Result<()> {
     let mut client = GeyserGrpcClient::build_from_shared(cfg.grpc_endpoint.clone())?
         .x_token(Some(cfg.grpc_token.clone()))?
         .tls_config(ClientTlsConfig::new().with_native_roots())?
@@ -108,7 +162,6 @@ async fn run_stream(cfg: &Config) -> Result<()> {
     let (mut subscribe_tx, mut stream) = client.subscribe().await?;
     subscribe_tx.send(request).await?;
 
-    let http = Client::builder().timeout(Duration::from_secs(10)).build()?;
     let mut seen: HashSet<String> = HashSet::new();
 
     while let Some(result) = stream.next().await {
@@ -169,9 +222,10 @@ async fn run_stream(cfg: &Config) -> Result<()> {
             }
 
             let symbol = "NEW";
-            if let Err(e) = post_ingest(&http, cfg, mint, symbol).await {
+            if let Err(e) = post_ingest(http, cfg, mint, symbol).await {
                 warn!("ingest {mint}: {e:#}");
             } else {
+                ingests.fetch_add(1, Ordering::Relaxed);
                 info!("ingested create mint={mint}");
             }
         }
@@ -196,6 +250,32 @@ async fn post_ingest(http: &Client, cfg: &Config, mint: &str, symbol: &str) -> R
     let resp = req.send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("HTTP {} {}", resp.status(), resp.text().await.unwrap_or_default());
+    }
+    Ok(())
+}
+
+async fn post_heartbeat(
+    http: &Client,
+    orchestrator_url: &str,
+    secret: Option<&str>,
+    status: &str,
+    detail: Option<&str>,
+    ingests: Option<u64>,
+) -> Result<()> {
+    let body = HeartbeatBody {
+        worker: WORKER,
+        status,
+        detail,
+        ingests,
+    };
+    let url = format!("{orchestrator_url}/api/sniper/heartbeat");
+    let mut req = http.post(&url).json(&body);
+    if let Some(s) = secret {
+        req = req.header("X-Sniper-Secret", s);
+    }
+    let resp = req.send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("heartbeat HTTP {}", resp.status());
     }
     Ok(())
 }

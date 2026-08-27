@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,8 @@ from orchestrator.desk import DeskRuntime, load_risk_limits, start_desk
 from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook
 from orchestrator.journal.store import JournalStore
+from orchestrator.sniper_health import SniperHealthStore
+from orchestrator.tts.maisie import synthesize_maisie, voice_info
 from orchestrator.ws.events import mode_changed, status_snapshot
 
 journal = JournalStore(settings.data_dir / "desk.db")
@@ -30,6 +32,7 @@ _ws_clients: set[WebSocket] = set()
 _tasks: list[asyncio.Task] = []
 _running = True
 _desk: DeskRuntime | None = None
+_sniper_health = SniperHealthStore()
 
 
 async def _broadcast(event) -> None:
@@ -54,7 +57,8 @@ async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     journal.record_equity(paper_book.equity_sol)
     _desk, _tasks = await start_desk(
-        settings, get_mode, paper_book, live_exec, journal, _broadcast, lambda: _running
+        settings, get_mode, paper_book, live_exec, journal, _broadcast, lambda: _running,
+        on_feed_heartbeat=_sniper_health.touch,
     )
     yield
     _running = False
@@ -90,6 +94,17 @@ class ChatBody(BaseModel):
     text: str = Field(min_length=1, max_length=500)
 
 
+class TtsBody(BaseModel):
+    text: str = Field(min_length=1, max_length=520)
+
+
+class HeartbeatBody(BaseModel):
+    worker: str = Field(min_length=1, max_length=64)
+    status: str = "ok"
+    detail: str | None = None
+    ingests: int | None = None
+
+
 def _integrations() -> dict[str, Any]:
     flags = settings.integration_flags()
     return {
@@ -107,26 +122,38 @@ def _integrations() -> dict[str, Any]:
             "cope_fomo": {"active": flags["cope_fomo"]},
             "pumpportal_key": {"active": flags["pumpportal_key"]},
             "pumpportal_stream": {"active": True},
+            "copy_trading": {
+                "active": bool(flags["pumpportal_key"] and settings.cope_api_key),
+                "requires": "PUMPPORTAL_API_KEY + COPE_API_KEY or copy_wallets.yaml",
+            },
             "jito": {
                 "active": flags["jito"],
                 "url": (settings.jito_block_engine_url or "")[:40] or None,
             },
             "sniper_ingest": {"active": flags["sniper_ingest"]},
             "mock_stream": {"active": flags["mock_stream"]},
+            "elevenlabs_tts": {
+                "active": flags["elevenlabs_tts"],
+                "voice": "Maisie",
+            },
+            "rugcheck": {"active": flags["rugcheck"]},
+            "research_llm": {"active": flags["research_llm"]},
         },
         "live_requires": ["SOLANA_PRIVATE_KEY", "SOLANA_RPC_URL or HELIUS_API_KEY"],
         "optional_boosters": [
             "COPE_API_KEY",
             "PUMPPORTAL_API_KEY",
             "HELIUS_API_KEY",
+            "ELEVENLABS_API_KEY",
             "JITO_BLOCK_ENGINE_URL + USE_JITO=true",
             "SNIPER_INGEST_SECRET",
         ],
     }
 
 
-def _desk_status() -> dict[str, Any]:
-    return {
+def _desk_status_sync() -> dict[str, Any]:
+    wallet = (_desk._wallet_cache if _desk else None) or paper_book.to_dict()
+    base = {
         "mode": _desk_mode.value,
         "live_ready": live_exec.ready,
         "mock_stream": settings.mock_stream,
@@ -140,13 +167,26 @@ def _desk_status() -> dict[str, Any]:
             "executor",
             "learner",
         ],
-        "wallet": paper_book.to_dict(),
+        "wallet": wallet,
         "stats": journal.stats(),
         "fomo_enabled": bool(settings.cope_api_key),
         "learner_weights": journal.get_weights(),
         "ws_clients": len(_ws_clients),
         "integrations": _integrations()["integrations"],
     }
+    if _desk:
+        base.update(_desk.status_extra())
+    base["sniper_health"] = _sniper_health.snapshot()
+    return base
+
+
+async def _desk_status() -> dict[str, Any]:
+    base = _desk_status_sync()
+    if _desk:
+        base["wallet"] = await _desk.wallet_snapshot(_desk_mode)
+        base.update(_desk.status_extra())
+    base["sniper_health"] = _sniper_health.snapshot()
+    return base
 
 
 @app.get("/api/health")
@@ -155,8 +195,8 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/status")
-def status() -> dict[str, Any]:
-    return _desk_status()
+async def status() -> dict[str, Any]:
+    return await _desk_status()
 
 
 @app.get("/api/integrations")
@@ -207,13 +247,51 @@ async def ingest_candidate(
         source=body.source,
         copy_boost=body.copy_boost,
     )
+    if ok and body.source in ("yellowstone", "sniper"):
+        _sniper_health.record_ingest(body.source)
     return {"accepted": ok, "mint": body.mint}
 
 
+@app.post("/api/sniper/heartbeat")
+async def sniper_heartbeat(
+    body: HeartbeatBody,
+    x_sniper_secret: str | None = Header(default=None, alias="X-Sniper-Secret"),
+) -> dict[str, str]:
+    secret = settings.sniper_ingest_secret
+    if secret and x_sniper_secret != secret:
+        raise HTTPException(401, detail="Invalid sniper ingest secret")
+    _sniper_health.heartbeat(
+        body.worker,
+        status=body.status,
+        detail=body.detail,
+        ingests=body.ingests,
+    )
+    return {"ok": "true"}
+
+
+@app.get("/api/sniper/health")
+def sniper_health() -> dict[str, Any]:
+    return _sniper_health.snapshot()
+
+
+@app.get("/api/voice")
+def get_voice() -> dict[str, object]:
+    return voice_info()
+
+
+@app.post("/api/tts")
+async def tts(body: TtsBody) -> Response:
+    try:
+        audio = await synthesize_maisie(body.text.strip())
+    except RuntimeError as exc:
+        raise HTTPException(503, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/mpeg")
+
+
 @app.post("/api/chat")
-def chat(body: ChatBody) -> dict[str, str]:
+async def chat(body: ChatBody) -> dict[str, str]:
     lower = body.text.lower()
-    st = _desk_status()
+    st = await _desk_status()
     if "status" in lower or "how" in lower and "desk" in lower:
         w = st["wallet"]
         return {
@@ -234,6 +312,14 @@ def chat(body: ChatBody) -> dict[str, str]:
         return {"reply": "Paper mode simulates bonding-curve fills with full safety and journal."}
     if "block" in lower:
         return {"reply": f"Safety blocks so far: {st['stats']['blocks']}."}
+    if "copy" in lower:
+        ct = st.get("copy_trading") or {}
+        return {
+            "reply": (
+                f"Copy-trading {'on' if ct.get('enabled') else 'off'}. "
+                f"Watching {ct.get('wallets', 0)} wallets."
+            )
+        }
     if "backtest" in lower:
         bt = run_backtest(journal)
         return {
@@ -269,7 +355,8 @@ async def set_desk_mode(body: ModeBody) -> dict[str, Any]:
             )
     _desk_mode = body.mode
     await _broadcast(mode_changed(_desk_mode.value))
-    await _broadcast(status_snapshot({"mode": _desk_mode.value, "wallet": paper_book.to_dict()}))
+    wallet = await _desk.wallet_snapshot(_desk_mode) if _desk else paper_book.to_dict()
+    await _broadcast(status_snapshot({"mode": _desk_mode.value, "wallet": wallet}))
     return {"mode": _desk_mode.value, "live_ready": live_exec.ready}
 
 
@@ -277,7 +364,7 @@ async def set_desk_mode(body: ModeBody) -> dict[str, Any]:
 async def onyx_ws(ws: WebSocket) -> None:
     await ws.accept()
     _ws_clients.add(ws)
-    await ws.send_json(status_snapshot(_desk_status()).to_wire())
+    await ws.send_json(status_snapshot(await _desk_status()).to_wire())
     try:
         while True:
             await ws.receive_text()

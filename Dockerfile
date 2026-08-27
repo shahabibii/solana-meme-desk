@@ -32,6 +32,8 @@ RUN pip install --no-cache-dir -e ".[backtest]"
 COPY config /config
 COPY --from=web /web/dist /app/static
 COPY --from=sniper /build/target/release/meme-sniper-rs /app/meme-sniper-rs
+COPY scripts/run-sniper-rs.sh /app/run-sniper-rs.sh
+RUN chmod +x /app/run-sniper-rs.sh
 
 RUN mkdir -p /data
 VOLUME ["/data"]

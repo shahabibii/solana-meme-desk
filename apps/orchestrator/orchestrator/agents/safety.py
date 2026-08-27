@@ -13,7 +13,7 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 JUPITER_QUOTE = "https://quote-api.jup.ag/v6/quote"
 
 # Bonding-curve launches — mint authority + no Jupiter route is normal at create time.
-PUMP_SOURCES = frozenset({"pump", "sniper", "yellowstone", "fomo", "convergence"})
+PUMP_SOURCES = frozenset({"pump", "sniper", "yellowstone", "fomo", "convergence", "copy"})
 
 
 async def _rpc_get_mint_info(rpc: str, mint: str) -> dict | None:
@@ -129,5 +129,20 @@ async def run_safety(mint: str, settings: Settings, *, source: str = "pump") -> 
         source=source,
         min_score=settings.safety_min_score,
     )
+
+    if settings.rugcheck_enabled:
+        from orchestrator.agents.safety_rugcheck import fetch_rugcheck
+
+        rug = await fetch_rugcheck(mint)
+        if rug.risks:
+            report.reasons.extend([f"rug:{r}" for r in rug.risks[:3]])
+        report.score = max(0, report.score - rug.penalty)
+        if not rug.passed:
+            report.passed = False
+            report.reasons.append("rugcheck_fail")
+        elif report.passed and report.score < settings.safety_min_score:
+            report.passed = False
+            report.reasons.append("rugcheck_score")
+
     report.ms = int((time.perf_counter() - t0) * 1000)
     return report

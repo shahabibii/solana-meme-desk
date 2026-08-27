@@ -6,7 +6,7 @@
 - **Agent rail** — Scout, Safety, Copy, Research, Scorer, Executor, Learner
 - **Center** — selected mint chart (bonding curve), Onyx orb, agent timeline
 - **Signal feed** — live mints, blocks, fills, fomo convergence
-- **Chat bar** — voice + text commands to Onyx
+- **Chat bar** — voice + text commands to Onyx (Maisie via ElevenLabs when `ELEVENLABS_API_KEY` set)
 
 ## WebSocket events
 

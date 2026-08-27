@@ -141,7 +141,7 @@ class JournalStore:
     def get_weights(self) -> dict[str, float]:
         with self._conn() as c:
             rows = c.execute("SELECT key, weight FROM learner_weights").fetchall()
-        defaults = {"pump": 1.0, "fomo": 1.0, "convergence": 1.2, "safety": 1.0}
+        defaults = {"pump": 1.0, "fomo": 1.0, "convergence": 1.2, "copy": 1.15, "safety": 1.0}
         for r in rows:
             defaults[r["key"]] = float(r["weight"])
         return defaults

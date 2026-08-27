@@ -17,6 +17,7 @@ class Position:
     source: str = "pump"
     safety_score: int = 0
     peak_pnl_pct: float = 0.0
+    tp_hit: set[float] = field(default_factory=set)
     entry_ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

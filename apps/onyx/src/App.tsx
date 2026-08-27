@@ -9,7 +9,7 @@ import {
   setMode,
 } from "./api";
 import { useDesk, type FeedItem } from "./store";
-import { speakText } from "./voice";
+import { speakText, loadVoiceConfig } from "./voice";
 import AgentRail from "./components/AgentRail";
 import OnyxOrb from "./components/OnyxOrb";
 import SignalFeed from "./components/SignalFeed";
@@ -18,8 +18,8 @@ import ChatBar from "./components/ChatBar";
 import EquityCurve from "./components/EquityCurve";
 import StatsPanel from "./components/StatsPanel";
 import IntegrationsPanel from "./components/IntegrationsPanel";
-import CommandDeck from "./components/CommandDeck";
-import VitalsStrip from "./components/VitalsStrip";
+import TradeHistory from "./components/TradeHistory";
+import SniperHealth from "./components/SniperHealth";
 
 function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
   const ts = String(data.ts ?? new Date().toISOString());
@@ -82,6 +82,14 @@ export default function App() {
   }
 
   useEffect(() => {
+    void loadVoiceConfig().then((v) => {
+      if (v.active) {
+        setChatLog((l) => [
+          ...l,
+          { role: "onyx", text: `${v.label} voice online.` },
+        ]);
+      }
+    });
     void fetchStatus().then((s) => desk.applyStatus(s));
     void fetchMode().then((m) => {
       desk.setMode(m.mode);
@@ -228,7 +236,16 @@ export default function App() {
         </div>
         <div className="wallet-pill">
           <span>{desk.mode === "paper" ? "Paper wallet" : "Live wallet"}</span>
-          <strong>{desk.equitySol.toFixed(3)} SOL</strong>
+          <strong>
+            {(desk.mode === "live" && desk.onChainSol != null
+              ? desk.onChainSol
+              : desk.equitySol
+            ).toFixed(3)}{" "}
+            SOL
+          </strong>
+          {desk.mode === "live" && desk.onChainSol != null && (
+            <span className="muted tiny"> on-chain</span>
+          )}
           <em className={desk.connected ? "ok" : "bad"}>
             {desk.connected ? "stream live" : "reconnecting…"}
           </em>
@@ -281,6 +298,8 @@ export default function App() {
             onRefresh={(s) => desk.applyStatus(s)}
           />
           <IntegrationsPanel integrations={desk.integrations} />
+          <SniperHealth health={desk.sniperHealth as Parameters<typeof SniperHealth>[0]["health"]} />
+          <TradeHistory />
           <StatsPanel
             stats={desk.stats as Parameters<typeof StatsPanel>[0]["stats"]}
             weights={desk.learnerWeights}

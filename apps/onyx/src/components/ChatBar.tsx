@@ -57,7 +57,11 @@ export default function ChatBar({
           type="button"
           className={`voice-toggle ${voiceEnabled ? "on" : ""}`}
           onClick={onToggleVoice}
-          title={voiceEnabled ? "Mute Onyx voice" : "Enable Onyx voice"}
+          title={
+            voiceEnabled
+              ? "Mute Onyx voice (Maisie)"
+              : "Enable Onyx voice (Maisie)"
+          }
           aria-pressed={voiceEnabled}
         >
           {voiceEnabled ? "🔊" : "🔇"}

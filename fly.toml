@@ -15,10 +15,13 @@ primary_region = "iad"
   MOCK_STREAM = "false"
   YELLOWSTONE_GRPC_ENDPOINT = "https://laserstream-mainnet-ewr.helius-rpc.com"
   ORCHESTRATOR_URL = "http://127.0.0.1:8787"
+  SNIPER_RS_ENABLED = "false"
+  SNIPER_PLAN_BACKOFF_SEC = "120"
+  RUGCHECK_ENABLED = "true"
 
 [processes]
   web = "uvicorn orchestrator.main:app --host 0.0.0.0 --port 8787"
-  sniper = "/app/meme-sniper-rs"
+  sniper = "/app/run-sniper-rs.sh"
 
 [http_service]
   internal_port = 8787

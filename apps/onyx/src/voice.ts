@@ -1,4 +1,6 @@
-/** Browser speech helpers for Onyx voice command. */
+import { fetchVoiceConfig, synthesizeSpeech, type VoiceConfig } from "./api";
+
+/** Browser speech helpers — Maisie (ElevenLabs) with browser fallback. */
 
 export type VoiceSupport = {
   listen: boolean;
@@ -17,6 +19,10 @@ type RecognitionLike = {
   onend: (() => void) | null;
 };
 
+let voiceConfig: VoiceConfig | null = null;
+let currentAudio: HTMLAudioElement | null = null;
+let speakGeneration = 0;
+
 function getRecognitionCtor(): (new () => RecognitionLike) | null {
   const w = window as Window & {
     SpeechRecognition?: new () => RecognitionLike;
@@ -28,16 +34,48 @@ function getRecognitionCtor(): (new () => RecognitionLike) | null {
 export function voiceSupport(): VoiceSupport {
   return {
     listen: Boolean(getRecognitionCtor()),
-    speak: typeof window !== "undefined" && "speechSynthesis" in window,
+    speak: typeof window !== "undefined",
   };
 }
 
-function pickOnyxVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+export async function loadVoiceConfig(): Promise<VoiceConfig> {
+  if (voiceConfig) return voiceConfig;
+  voiceConfig = await fetchVoiceConfig();
+  return voiceConfig;
+}
+
+export function getVoiceLabel(): string {
+  return voiceConfig?.label ?? "Maisie — friendly casual neighbor";
+}
+
+function stopPlayback(): void {
+  speakGeneration += 1;
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.src = "";
+    currentAudio = null;
+  }
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+function stripMarkdownForSpeech(text: string): string {
+  return text
+    .replace(/\*\*?/g, "")
+    .replace(/`+/g, "")
+    .replace(/#{1,6}\s*/g, "")
+    .replace(/\n+/g, ". ")
+    .trim();
+}
+
+function pickBrowserVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
   const rank = (v: SpeechSynthesisVoice): number => {
     const n = `${v.name} ${v.lang}`;
-    if (/Google UK English Female/i.test(n)) return 100;
-    if (/Microsoft (Sonia|Hazel|Susan)/i.test(n)) return 95;
-    if (/Karen|Moira|Tessa|Fiona|Serena/i.test(n)) return 90;
+    if (/maisie/i.test(n)) return 100;
+    if (/Google UK English Female/i.test(n)) return 95;
+    if (/Microsoft (Sonia|Hazel|Susan)/i.test(n)) return 90;
+    if (/Karen|Moira|Tessa|Fiona|Serena/i.test(n)) return 85;
     if (/Samantha|Victoria|Kathy|Allison|Ava|Zoe/i.test(n) && /en/i.test(v.lang)) return 80;
     if (/female|woman/i.test(n) && /^en(-|_|$)/i.test(v.lang)) return 70;
     if (/^en-GB|^en-AU|^en-IE/i.test(v.lang) && !/male|daniel|david|arthur|george/i.test(n))
@@ -52,27 +90,14 @@ function pickOnyxVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | n
   return scored[0]?.v ?? null;
 }
 
-function stripMarkdownForSpeech(text: string): string {
-  return text
-    .replace(/\*\*?/g, "")
-    .replace(/`+/g, "")
-    .replace(/#{1,6}\s*/g, "")
-    .replace(/\n+/g, ". ")
-    .trim();
-}
-
-export function speakText(text: string, enabled: boolean): void {
-  if (!enabled || !text.trim() || !("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const clean = stripMarkdownForSpeech(text).slice(0, 520);
-  if (!clean) return;
-
+function speakBrowser(clean: string): void {
+  if (!("speechSynthesis" in window)) return;
   const speakNow = () => {
     const u = new SpeechSynthesisUtterance(clean);
-    u.rate = 0.92;
-    u.pitch = 1.12;
+    u.rate = 0.94;
+    u.pitch = 1.08;
     u.lang = "en-GB";
-    const preferred = pickOnyxVoice(window.speechSynthesis.getVoices());
+    const preferred = pickBrowserVoice(window.speechSynthesis.getVoices());
     if (preferred) {
       u.voice = preferred;
       u.lang = preferred.lang || "en-GB";
@@ -90,6 +115,63 @@ export function speakText(text: string, enabled: boolean): void {
     return;
   }
   speakNow();
+}
+
+async function playAudioBlob(blob: Blob, generation: number): Promise<void> {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  currentAudio = audio;
+  await new Promise<void>((resolve, reject) => {
+    audio.onended = () => resolve();
+    audio.onerror = () => reject(new Error("audio playback failed"));
+    void audio.play().catch(reject);
+  }).finally(() => {
+    URL.revokeObjectURL(url);
+    if (speakGeneration === generation && currentAudio === audio) {
+      currentAudio = null;
+    }
+  });
+}
+
+export function speakText(text: string, enabled: boolean): void {
+  void speakTextAsync(text, enabled);
+}
+
+async function speakTextAsync(text: string, enabled: boolean): Promise<void> {
+  if (!enabled || !text.trim()) return;
+
+  const clean = stripMarkdownForSpeech(text).slice(0, 520);
+  if (!clean) return;
+
+  stopPlayback();
+  const generation = speakGeneration;
+
+  const config = voiceConfig ?? (await loadVoiceConfig());
+  if (config.active) {
+    try {
+      const blob = await synthesizeSpeech(clean);
+      if (generation !== speakGeneration) return;
+      await playAudioBlob(blob, generation);
+      return;
+    } catch {
+      if (generation !== speakGeneration) return;
+    }
+  }
+
+  if (generation !== speakGeneration) return;
+  speakBrowser(clean);
+}
+
+export async function playVoicePreview(): Promise<void> {
+  const config = voiceConfig ?? (await loadVoiceConfig());
+  stopPlayback();
+  const generation = speakGeneration;
+  const audio = new Audio(config.preview_url);
+  currentAudio = audio;
+  await audio.play().catch(() => undefined);
+  audio.onended = () => {
+    if (speakGeneration === generation) currentAudio = null;
+  };
 }
 
 export function startListening(opts: {

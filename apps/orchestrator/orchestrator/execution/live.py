@@ -53,6 +53,27 @@ class LiveExecutor:
             return None
         return str(self._keypair.pubkey())
 
+    async def get_balance_sol(self) -> float | None:
+        if not self._keypair:
+            return None
+        rpc = self._settings.effective_rpc_url
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBalance",
+            "params": [self.public_key],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.post(rpc, json=payload)
+                data = resp.json()
+                lamports = (data.get("result") or {}).get("value")
+                if lamports is None:
+                    return None
+                return float(lamports) / 1_000_000_000.0
+        except Exception:
+            return None
+
     async def buy(self, mint: str, sol: float) -> dict[str, Any]:
         return await self._trade("buy", mint, sol, denominated_in_sol=True)
 
