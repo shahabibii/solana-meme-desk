@@ -2,11 +2,52 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 
 from orchestrator.models import MintCandidate
+
+# Solana base58 pubkeys are typically 32–44 chars.
+_WALLET_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+_SKIP_KEYS = frozenset({"mint", "token", "tokenAddress", "symbol", "ticker", "name"})
+
+
+def _looks_like_wallet(value: str) -> bool:
+    return bool(_WALLET_RE.match(value)) and len(value) >= 32
+
+
+def _extract_wallets(obj: Any, *, into: list[str], depth: int = 0) -> None:
+    if depth > 6 or len(into) >= 40:
+        return
+    if isinstance(obj, str):
+        if _looks_like_wallet(obj) and obj not in into:
+            into.append(obj)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            _extract_wallets(item, into=into, depth=depth + 1)
+        return
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            if key in _SKIP_KEYS and isinstance(val, str):
+                continue
+            if key.lower() in {
+                "wallet",
+                "address",
+                "pubkey",
+                "trader",
+                "publickey",
+                "owner",
+                "signer",
+                "user",
+                "account",
+            } and isinstance(val, str):
+                if _looks_like_wallet(val) and val not in into:
+                    into.append(val)
+                continue
+            _extract_wallets(val, into=into, depth=depth + 1)
 
 
 class CopeClient:
@@ -52,29 +93,29 @@ class CopeClient:
     async def top_traders(self, limit: int = 20) -> list[str]:
         """Resolve wallet addresses for copy-trading watchlist."""
         wallets: list[str] = []
-        for path in ("/traders/top", "/watchlist", "/traders/hot", "/wallets/top"):
+        for path in (
+            "/traders/top",
+            "/traders",
+            "/watchlist",
+            "/traders/hot",
+            "/wallets/top",
+            "/smart-money",
+            "/leaders",
+        ):
             data = await self._get_json(path, params={"limit": limit})
             if not data:
                 continue
-            items = data if isinstance(data, list) else (data.get("traders") or data.get("wallets") or data.get("data") or [])
-            for item in items:
-                if isinstance(item, str) and len(item) >= 32:
-                    wallets.append(item)
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                w = (
-                    item.get("wallet")
-                    or item.get("address")
-                    or item.get("pubkey")
-                    or item.get("trader")
-                    or item.get("publicKey")
-                )
-                if w and len(str(w)) >= 32:
-                    wallets.append(str(w))
+            _extract_wallets(data, into=wallets)
             if wallets:
                 break
-        # dedupe preserve order
+
+        # Fallback: scrape wallets embedded in hot/convergence payloads.
+        if len(wallets) < limit:
+            for item in await self.convergence(limit=15):
+                _extract_wallets(item, into=wallets)
+            for item in await self.hot_tokens(limit=15):
+                _extract_wallets(item, into=wallets)
+
         seen: set[str] = set()
         out: list[str] = []
         for w in wallets:

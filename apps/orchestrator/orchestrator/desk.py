@@ -498,7 +498,7 @@ async def start_desk(
     full = load_full_risk_limits(settings.config_dir)
     paper.limits = full.paper
     risk = RiskManager(full, journal)
-    copy_cfg = load_copy_config(settings.config_dir)
+    copy_cfg = load_copy_config(settings.config_dir, settings.data_dir)
     desk = DeskRuntime(
         settings, paper, live, journal, broadcast, risk, copy_cfg, get_paused, on_alert
     )

@@ -119,6 +119,11 @@ class PauseBody(BaseModel):
     paused: bool
 
 
+class CopyWalletsBody(BaseModel):
+    wallets: list[str] = Field(default_factory=list)
+    replace: bool = False
+
+
 def _setup_checklist() -> dict[str, Any]:
     flags = settings.integration_flags()
     missing = []
@@ -332,6 +337,30 @@ async def set_desk_pause(body: PauseBody) -> dict[str, Any]:
 async def refresh_copy_wallets() -> dict[str, Any]:
     if not _desk:
         raise HTTPException(503, detail="Desk not ready")
+    wallets = await _desk.refresh_copy_wallets()
+    return {"wallets": wallets, "count": len(wallets)}
+
+
+@app.post("/api/copy/wallets")
+async def set_copy_wallets(body: CopyWalletsBody) -> dict[str, Any]:
+    """Add or replace manual copy-trading wallets (runtime; persists to copy_wallets.yaml)."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    cleaned = [w.strip() for w in body.wallets if w and len(w.strip()) >= 32]
+    if body.replace:
+        _desk.copy_cfg.wallets = cleaned
+    else:
+        merged = list(_desk.copy_cfg.wallets)
+        for w in cleaned:
+            if w not in merged:
+                merged.append(w)
+        _desk.copy_cfg.wallets = merged[: _desk.copy_cfg.max_wallets]
+
+    # Persist on volume so restarts keep the list
+    from orchestrator.config_loaders import save_runtime_wallets
+
+    save_runtime_wallets(settings.data_dir, list(_desk.copy_cfg.wallets))
+
     wallets = await _desk.refresh_copy_wallets()
     return {"wallets": wallets, "count": len(wallets)}
 
