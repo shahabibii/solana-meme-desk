@@ -296,6 +296,7 @@ export default function App() {
           <CommandDeck
             onNotify={notify}
             onRefresh={(s) => desk.applyStatus(s)}
+            paused={desk.paused}
           />
           <IntegrationsPanel integrations={desk.integrations} />
           <SniperHealth health={desk.sniperHealth as Parameters<typeof SniperHealth>[0]["health"]} />

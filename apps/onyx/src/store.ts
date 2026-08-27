@@ -45,6 +45,7 @@ type DeskState = {
   fomoEnabled: boolean;
   onChainSol: number | null;
   sniperHealth: Record<string, unknown> | null;
+  paused: boolean;
   integrations: Record<string, { active?: boolean; ready?: boolean }> | null;
   setMode: (m: DeskMode) => void;
   setLiveReady: (v: boolean) => void;
@@ -86,6 +87,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   fomoEnabled: false,
   onChainSol: null,
   sniperHealth: null,
+  paused: false,
   integrations: null,
   setMode: (m) => set({ mode: m }),
   setLiveReady: (v) => set({ liveReady: v }),
@@ -107,6 +109,7 @@ export const useDesk = create<DeskState>((set, get) => ({
       set({ learnerWeights: p.learner_weights as Record<string, number> });
     if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
     if (p.sniper_health) set({ sniperHealth: p.sniper_health as Record<string, unknown> });
+    if (typeof p.paused === "boolean") set({ paused: p.paused });
     if (p.integrations)
       set({ integrations: p.integrations as Record<string, { active?: boolean }> });
   },

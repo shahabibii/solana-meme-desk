@@ -43,6 +43,8 @@ class DeskRuntime:
         broadcast: Broadcast,
         risk: RiskManager,
         copy_cfg: CopyConfig,
+        get_paused: Callable[[], bool] | None = None,
+        on_alert: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.settings = settings
         self.paper = paper
@@ -60,6 +62,8 @@ class DeskRuntime:
         self._copy_wallets: list[str] = list(copy_cfg.wallets)
         self._last_copy_refresh = 0.0
         self._wallet_cache: dict | None = None
+        self._get_paused = get_paused or (lambda: False)
+        self._on_alert = on_alert
 
     async def enqueue(self, candidate: MintCandidate) -> None:
         if candidate.mint in self._seen or candidate.mint in self._processing:
@@ -159,6 +163,8 @@ class DeskRuntime:
         return self.paper.cash_sol
 
     async def _run_pipeline(self, candidate: MintCandidate, mode: DeskMode) -> None:
+        if self._get_paused():
+            return
         mint = candidate.mint
         await self.broadcast(ev.mint_candidate(mint, candidate.source, candidate.symbol))
 
@@ -221,6 +227,8 @@ class DeskRuntime:
         ok, reason = self.risk.can_open_position(mode=mode_str, open_count=open_n)
         if not ok:
             await self._agent_step("executor", mint, "REJECTED", 10, reason)
+            if reason == "max_daily_loss" and self._on_alert:
+                await self._on_alert(f"Daily loss cap hit ({mode_str}) — desk blocked new entries.")
             return
 
         on_chain = await self.live.get_balance_sol() if mode == DeskMode.LIVE else None
@@ -263,6 +271,8 @@ class DeskRuntime:
                 )
                 self.journal.record_equity(self.paper.equity_sol)
                 await self.broadcast(ev.trade_fill("buy", mint, sol, "paper"))
+                if self._on_alert:
+                    await self._on_alert(f"BUY {candidate.symbol} · {sol:.3f} SOL · paper · {candidate.source}")
                 await self._agent_step("executor", mint, "FILLED", 120)
                 await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
             else:
@@ -292,6 +302,8 @@ class DeskRuntime:
                     "tp_hit": set(),
                 }
                 await self.broadcast(ev.trade_fill("buy", mint, sol, "live"))
+                if self._on_alert:
+                    await self._on_alert(f"BUY {candidate.symbol} · {sol:.3f} SOL · LIVE · {candidate.source}")
                 await self._agent_step("executor", mint, "SUBMITTED", 200, sig[:16] if sig else None)
                 await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
             except Exception as exc:
@@ -480,12 +492,16 @@ async def start_desk(
     broadcast: Broadcast,
     running: Callable[[], bool],
     on_feed_heartbeat: Callable[..., None] | None = None,
+    get_paused: Callable[[], bool] | None = None,
+    on_alert: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[DeskRuntime, list[asyncio.Task]]:
     full = load_full_risk_limits(settings.config_dir)
     paper.limits = full.paper
     risk = RiskManager(full, journal)
     copy_cfg = load_copy_config(settings.config_dir)
-    desk = DeskRuntime(settings, paper, live, journal, broadcast, risk, copy_cfg)
+    desk = DeskRuntime(
+        settings, paper, live, journal, broadcast, risk, copy_cfg, get_paused, on_alert
+    )
     await desk.refresh_copy_wallets()
 
     async def feed_heartbeat_loop() -> None:

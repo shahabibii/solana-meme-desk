@@ -38,6 +38,22 @@ export async function synthesizeSpeech(text: string): Promise<Blob> {
   return r.blob();
 }
 
+export async function setDeskPaused(paused: boolean): Promise<{ paused: boolean; message: string }> {
+  const r = await fetch(`${BASE}/api/desk/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paused }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function refreshCopyWallets(): Promise<{ count: number; wallets: string[] }> {
+  const r = await fetch(`${BASE}/api/copy/refresh`, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function fetchTrades(limit = 20): Promise<{ trades: Record<string, unknown>[] }> {
   const r = await fetch(`${BASE}/api/trades?limit=${limit}`);
   return r.json();

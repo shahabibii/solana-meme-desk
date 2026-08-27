@@ -13,7 +13,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from orchestrator.agents.backtest import run_backtest
+from orchestrator.alerts import send_alert
+from orchestrator.desk_controls import DeskControls
 from orchestrator.agents.scorer import run_learner
 from orchestrator.config import DeskMode, settings
 from orchestrator.desk import DeskRuntime, load_risk_limits, start_desk
@@ -33,6 +34,13 @@ _tasks: list[asyncio.Task] = []
 _running = True
 _desk: DeskRuntime | None = None
 _sniper_health = SniperHealthStore()
+_controls = DeskControls(settings.data_dir)
+
+
+async def _alert(message: str) -> None:
+    if not settings.alert_webhook_url:
+        return
+    await send_alert(settings.alert_webhook_url, f"**Onyx Desk** · {message}")
 
 
 async def _broadcast(event) -> None:
@@ -59,6 +67,8 @@ async def lifespan(app: FastAPI):
     _desk, _tasks = await start_desk(
         settings, get_mode, paper_book, live_exec, journal, _broadcast, lambda: _running,
         on_feed_heartbeat=_sniper_health.touch,
+        get_paused=lambda: _controls.paused,
+        on_alert=_alert if settings.alert_webhook_url else None,
     )
     yield
     _running = False
@@ -103,6 +113,33 @@ class HeartbeatBody(BaseModel):
     status: str = "ok"
     detail: str | None = None
     ingests: int | None = None
+
+
+class PauseBody(BaseModel):
+    paused: bool
+
+
+def _setup_checklist() -> dict[str, Any]:
+    flags = settings.integration_flags()
+    missing = []
+    if not flags["pumpportal_key"]:
+        missing.append("PUMPPORTAL_API_KEY — required for wallet copy-trading stream")
+    if not flags["elevenlabs_tts"]:
+        missing.append("ELEVENLABS_API_KEY — optional Maisie voice")
+    if not flags["research_llm"]:
+        missing.append("OPENAI_API_KEY + RESEARCH_LLM_ENABLED=true — optional LLM research")
+    if not settings.alert_webhook_url:
+        missing.append("ALERT_WEBHOOK_URL — optional Discord alerts on fills/loss cap")
+    wallets = len(_desk._copy_wallets) if _desk else 0
+    if wallets == 0 and not flags["pumpportal_key"]:
+        missing.append("copy_wallets.yaml or Cope top-trader poll — no mirror wallets yet")
+    return {
+        "ready_for_copy_trading": flags["pumpportal_key"] and wallets > 0,
+        "ready_for_live": live_exec.ready,
+        "paused": _controls.paused,
+        "copy_wallets": wallets,
+        "missing": missing,
+    }
 
 
 def _integrations() -> dict[str, Any]:
@@ -173,6 +210,8 @@ def _desk_status_sync() -> dict[str, Any]:
         "learner_weights": journal.get_weights(),
         "ws_clients": len(_ws_clients),
         "integrations": _integrations()["integrations"],
+        "setup": _setup_checklist(),
+        "paused": _controls.paused,
     }
     if _desk:
         base.update(_desk.status_extra())
@@ -272,6 +311,29 @@ async def sniper_heartbeat(
 @app.get("/api/sniper/health")
 def sniper_health() -> dict[str, Any]:
     return _sniper_health.snapshot()
+
+
+@app.get("/api/setup")
+def setup_status() -> dict[str, Any]:
+    return _setup_checklist()
+
+
+@app.post("/api/desk/pause")
+async def set_desk_pause(body: PauseBody) -> dict[str, Any]:
+    _controls.set_paused(body.paused)
+    msg = "Desk paused — no new entries." if body.paused else "Desk resumed."
+    if settings.alert_webhook_url:
+        await _alert(msg)
+    await _broadcast(status_snapshot({"paused": _controls.paused, "setup": _setup_checklist()}))
+    return {"paused": _controls.paused, "message": msg}
+
+
+@app.post("/api/copy/refresh")
+async def refresh_copy_wallets() -> dict[str, Any]:
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    wallets = await _desk.refresh_copy_wallets()
+    return {"wallets": wallets, "count": len(wallets)}
 
 
 @app.get("/api/voice")

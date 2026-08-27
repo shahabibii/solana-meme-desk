@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     research_llm_enabled: bool = False
     openai_model: str = "gpt-4o-mini"
 
+    # Ops
+    alert_webhook_url: str | None = None
+    alerts_on_fill: bool = True
+    alerts_on_daily_loss: bool = True
+
     @field_validator("static_dir", mode="before")
     @classmethod
     def _empty_static_none(cls, v: object) -> Path | None:

@@ -5,14 +5,18 @@ import {
   fetchStatus,
   runBacktest,
   runLearner,
+  setDeskPaused,
+  refreshCopyWallets,
 } from "../api";
 
 export default function CommandDeck({
   onNotify,
   onRefresh,
+  paused,
 }: {
   onNotify: (text: string) => void;
   onRefresh: (status: Record<string, unknown>) => void;
+  paused?: boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -93,6 +97,33 @@ export default function CommandDeck({
           }
         >
           {busy === "keys" ? "…" : "Keys"}
+        </button>
+        <button
+          type="button"
+          disabled={!!busy}
+          className={paused ? "deck-danger" : ""}
+          onClick={() =>
+            void run("pause", async () => {
+              const r = await setDeskPaused(!paused);
+              onRefresh(await fetchStatus());
+              onNotify(r.message);
+            })
+          }
+        >
+          {busy === "pause" ? "…" : paused ? "Resume" : "Pause"}
+        </button>
+        <button
+          type="button"
+          disabled={!!busy}
+          onClick={() =>
+            void run("copy", async () => {
+              const r = await refreshCopyWallets();
+              onRefresh(await fetchStatus());
+              onNotify(`Copy watchlist: ${r.count} wallets`);
+            })
+          }
+        >
+          {busy === "copy" ? "…" : "Refresh wallets"}
         </button>
         <button
           type="button"

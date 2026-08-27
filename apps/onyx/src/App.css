@@ -697,6 +697,11 @@ h3 {
   cursor: wait;
 }
 
+.deck-grid button.deck-danger {
+  color: var(--danger);
+  border-color: rgba(255, 77, 109, 0.35);
+}
+
 .deck-grid button:hover:not(:disabled) {
   border-color: rgba(0, 245, 255, 0.45);
   box-shadow: 0 0 10px rgba(0, 245, 255, 0.12);
