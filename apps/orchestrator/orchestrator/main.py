@@ -138,7 +138,9 @@ def _setup_checklist() -> dict[str, Any]:
     if not flags["research_llm"]:
         missing.append("OPENAI_API_KEY + RESEARCH_LLM_ENABLED=true — optional LLM research")
     if not settings.alert_webhook_url:
-        missing.append("ALERT_WEBHOOK_URL — optional Discord alerts on fills/loss cap")
+        missing.append(
+            "ALERT_WEBHOOK_URL — optional Slack/Discord alerts on fills/loss cap"
+        )
     wallets = len(_desk._copy_wallets) if _desk else 0
     if wallets == 0 and not flags["pumpportal_key"]:
         missing.append("copy_wallets.yaml or Cope top-trader poll — no mirror wallets yet")
@@ -325,6 +327,19 @@ def sniper_health() -> dict[str, Any]:
 @app.get("/api/setup")
 def setup_status() -> dict[str, Any]:
     return _setup_checklist()
+
+
+@app.post("/api/alerts/test")
+async def test_alert(
+    x_sniper_secret: str | None = Header(default=None, alias="X-Sniper-Secret"),
+) -> dict[str, Any]:
+    secret = settings.sniper_ingest_secret
+    if secret and x_sniper_secret != secret:
+        raise HTTPException(401, detail="Invalid sniper ingest secret")
+    if not settings.alert_webhook_url:
+        raise HTTPException(400, detail="ALERT_WEBHOOK_URL not configured")
+    await _alert("Test alert — Onyx desk notifications are working.")
+    return {"ok": True, "message": "Test alert sent"}
 
 
 @app.post("/api/desk/pause")

@@ -90,8 +90,11 @@ function pickBrowserVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice 
   return scored[0]?.v ?? null;
 }
 
-function speakBrowser(clean: string): void {
-  if (!("speechSynthesis" in window)) return;
+function speakBrowser(clean: string, onEnd?: () => void): void {
+  if (!("speechSynthesis" in window)) {
+    onEnd?.();
+    return;
+  }
   const speakNow = () => {
     const u = new SpeechSynthesisUtterance(clean);
     u.rate = 0.94;
@@ -102,6 +105,8 @@ function speakBrowser(clean: string): void {
       u.voice = preferred;
       u.lang = preferred.lang || "en-GB";
     }
+    u.onend = () => onEnd?.();
+    u.onerror = () => onEnd?.();
     window.speechSynthesis.speak(u);
   };
 
@@ -133,11 +138,19 @@ async function playAudioBlob(blob: Blob, generation: number): Promise<void> {
   });
 }
 
-export function speakText(text: string, enabled: boolean): void {
-  void speakTextAsync(text, enabled);
+export function speakText(
+  text: string,
+  enabled: boolean,
+  opts?: { onStart?: () => void; onEnd?: () => void }
+): void {
+  void speakTextAsync(text, enabled, opts);
 }
 
-async function speakTextAsync(text: string, enabled: boolean): Promise<void> {
+async function speakTextAsync(
+  text: string,
+  enabled: boolean,
+  opts?: { onStart?: () => void; onEnd?: () => void }
+): Promise<void> {
   if (!enabled || !text.trim()) return;
 
   const clean = stripMarkdownForSpeech(text).slice(0, 520);
@@ -145,6 +158,11 @@ async function speakTextAsync(text: string, enabled: boolean): Promise<void> {
 
   stopPlayback();
   const generation = speakGeneration;
+  opts?.onStart?.();
+
+  const finish = () => {
+    if (generation === speakGeneration) opts?.onEnd?.();
+  };
 
   const config = voiceConfig ?? (await loadVoiceConfig());
   if (config.active) {
@@ -152,6 +170,7 @@ async function speakTextAsync(text: string, enabled: boolean): Promise<void> {
       const blob = await synthesizeSpeech(clean);
       if (generation !== speakGeneration) return;
       await playAudioBlob(blob, generation);
+      finish();
       return;
     } catch {
       if (generation !== speakGeneration) return;
@@ -159,7 +178,7 @@ async function speakTextAsync(text: string, enabled: boolean): Promise<void> {
   }
 
   if (generation !== speakGeneration) return;
-  speakBrowser(clean);
+  speakBrowser(clean, finish);
 }
 
 export async function playVoicePreview(): Promise<void> {

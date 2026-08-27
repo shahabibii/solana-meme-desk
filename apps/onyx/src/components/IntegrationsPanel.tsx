@@ -1,21 +1,33 @@
+const KEYS = [
+  "helius",
+  "live_wallet",
+  "cope_fomo",
+  "pumpportal_key",
+  "jito",
+  "sniper_ingest",
+  "solana_rpc",
+] as const;
+
 export default function IntegrationsPanel({
   integrations,
 }: {
-  integrations: Record<string, { active?: boolean; ready?: boolean; hint?: string }> | null;
+  integrations: Record<string, { active?: boolean; ready?: boolean }> | null;
 }) {
-  if (!integrations) return null;
-  const entries = Object.entries(integrations);
   return (
-    <div className="integrations-panel">
+    <div className="glass" style={{ padding: "0.45rem" }}>
       <h2>Integrations</h2>
-      <ul>
-        {entries.map(([key, val]) => (
-          <li key={key} className={val.active ? "on" : "off"}>
-            <span>{key.replace(/_/g, " ")}</span>
-            <em>{val.active ? (val.ready === false ? "key set" : "on") : "off"}</em>
-          </li>
-        ))}
-      </ul>
+      <div className="int-grid">
+        {KEYS.map((key) => {
+          const val = integrations?.[key];
+          const on = Boolean(val?.active);
+          return (
+            <div key={key} className="int-chip">
+              <span className={`dot ${on ? "ok" : "warn"}`} />
+              <span>{key.replace(/_/g, " ")}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

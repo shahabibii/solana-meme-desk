@@ -13,10 +13,14 @@ export default function CommandDeck({
   onNotify,
   onRefresh,
   paused,
+  onBacktestResult,
+  onOpenTrades,
 }: {
   onNotify: (text: string) => void;
   onRefresh: (status: Record<string, unknown>) => void;
   paused?: boolean;
+  onBacktestResult: (result: Record<string, unknown>) => void;
+  onOpenTrades: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -33,9 +37,9 @@ export default function CommandDeck({
   }
 
   return (
-    <div className="command-deck">
+    <div className="glass" style={{ padding: "0.45rem" }}>
       <h2>Command deck</h2>
-      <div className="deck-grid">
+      <div className="deck-btns">
         <button
           type="button"
           disabled={!!busy}
@@ -60,7 +64,11 @@ export default function CommandDeck({
             void run("learner", async () => {
               const r = await runLearner();
               onRefresh(await fetchStatus());
-              onNotify(`Learner updated: ${Object.entries(r.weights).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(", ")}`);
+              onNotify(
+                `Learner: ${Object.entries(r.weights)
+                  .map(([k, v]) => `${k}=${v.toFixed(2)}`)
+                  .join(", ")}`
+              );
             })
           }
         >
@@ -72,10 +80,11 @@ export default function CommandDeck({
           onClick={() =>
             void run("backtest", async () => {
               const r = await runBacktest();
+              onBacktestResult(r);
               const n = Number(r.round_trips ?? 0);
               onNotify(
                 n
-                  ? `Backtest: ${n} round-trips, win ${((Number(r.win_rate ?? 0)) * 100).toFixed(0)}%`
+                  ? `Backtest: ${n} RT, win ${((Number(r.win_rate ?? 0)) * 100).toFixed(0)}%`
                   : String(r.message ?? "No closed trades yet")
               );
             })
@@ -101,7 +110,21 @@ export default function CommandDeck({
         <button
           type="button"
           disabled={!!busy}
-          className={paused ? "deck-danger" : ""}
+          onClick={() =>
+            void run("blocks", async () => {
+              const { reply } = await chatOnyx("blocks");
+              onNotify(reply);
+            })
+          }
+        >
+          {busy === "blocks" ? "…" : "Why blocks?"}
+        </button>
+        <button type="button" disabled={!!busy} onClick={onOpenTrades}>
+          Trade log
+        </button>
+        <button
+          type="button"
+          disabled={!!busy}
           onClick={() =>
             void run("pause", async () => {
               const r = await setDeskPaused(!paused);
@@ -123,19 +146,7 @@ export default function CommandDeck({
             })
           }
         >
-          {busy === "copy" ? "…" : "Refresh wallets"}
-        </button>
-        <button
-          type="button"
-          disabled={!!busy}
-          onClick={() =>
-            void run("blocks", async () => {
-              const { reply } = await chatOnyx("blocks");
-              onNotify(reply);
-            })
-          }
-        >
-          {busy === "blocks" ? "…" : "Why blocks?"}
+          {busy === "copy" ? "…" : "Wallets"}
         </button>
       </div>
     </div>

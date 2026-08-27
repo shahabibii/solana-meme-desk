@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { FEED_CAP, FILLS_CAP } from "./config";
 
 export type DeskMode = "paper" | "live";
 
@@ -8,14 +9,27 @@ export type AgentState = {
   status: "idle" | "running" | "pass" | "block" | "trade";
   lastMs?: number;
   lastVerdict?: string;
+  blockReasons?: string[];
 };
+
+export type FeedKind = "cand" | "blk" | "fill" | "mode" | "ag";
 
 export type FeedItem = {
   id: string;
   ts: string;
-  kind: string;
+  kind: FeedKind;
   text: string;
+  sub?: string;
   mint?: string;
+  sev: "info" | "warn" | "live" | "mode";
+};
+
+export type RecentFill = {
+  id: string;
+  symbol: string;
+  sol: number;
+  side: string;
+  ts: string;
 };
 
 export type Position = {
@@ -36,9 +50,11 @@ type DeskState = {
   positions: Position[];
   agents: AgentState[];
   feed: FeedItem[];
+  recentFills: RecentFill[];
   selectedMint: string | null;
   chartPoints: number[];
   busyAgent: string | null;
+  lastScore: number | null;
   stats: Record<string, unknown> | null;
   equityPoints: { ts: string; equity_sol: number }[];
   learnerWeights: Record<string, number>;
@@ -47,16 +63,20 @@ type DeskState = {
   sniperHealth: Record<string, unknown> | null;
   paused: boolean;
   integrations: Record<string, { active?: boolean; ready?: boolean }> | null;
+  walletPubkey: string | null;
   setMode: (m: DeskMode) => void;
   setLiveReady: (v: boolean) => void;
   setConnected: (v: boolean) => void;
   applyStatus: (p: Record<string, unknown>) => void;
   pushFeed: (item: FeedItem) => void;
+  pushFill: (fill: RecentFill) => void;
   setAgentRunning: (id: string) => void;
-  setAgentDone: (id: string, verdict: string, ms: number) => void;
+  setAgentDone: (id: string, verdict: string, ms: number, reasons?: string[]) => void;
+  decayAgent: (id: string) => void;
   selectMint: (mint: string | null) => void;
   pushChart: (v: number) => void;
   setEquityPoints: (points: { ts: string; equity_sol: number }[]) => void;
+  setLastScore: (n: number | null) => void;
 };
 
 const AGENT_IDS = [
@@ -78,17 +98,20 @@ export const useDesk = create<DeskState>((set, get) => ({
   positions: [],
   agents: AGENT_IDS.map((a) => ({ ...a, status: "idle" as const })),
   feed: [],
+  recentFills: [],
   selectedMint: null,
-  chartPoints: [50, 52, 48, 55, 58, 54, 62, 65, 61, 68],
+  chartPoints: [0, 2, -1, 4, 6, 3, 8, 5, 7, 4],
   busyAgent: null,
+  lastScore: null,
   stats: null,
   equityPoints: [],
-  learnerWeights: { pump: 1, fomo: 1, convergence: 1.2, copy: 1.15 },
+  learnerWeights: { pump: 1, fomo: 1, convergence: 1.2, copy: 1.15, safety: 1 },
   fomoEnabled: false,
   onChainSol: null,
   sniperHealth: null,
   paused: false,
   integrations: null,
+  walletPubkey: null,
   setMode: (m) => set({ mode: m }),
   setLiveReady: (v) => set({ liveReady: v }),
   setConnected: (v) => set({ connected: v }),
@@ -103,6 +126,12 @@ export const useDesk = create<DeskState>((set, get) => ({
           wallet.on_chain_sol != null ? Number(wallet.on_chain_sol) : get().onChainSol,
       });
     }
+    const integ = p.integrations as
+      | Record<string, { active?: boolean; ready?: boolean; pubkey?: string }>
+      | undefined;
+    if (integ?.live_wallet?.pubkey) {
+      set({ walletPubkey: String(integ.live_wallet.pubkey) });
+    }
     if (typeof p.mode === "string") set({ mode: p.mode as DeskMode });
     if (p.stats) set({ stats: p.stats as Record<string, unknown> });
     if (p.learner_weights)
@@ -112,34 +141,52 @@ export const useDesk = create<DeskState>((set, get) => ({
     if (typeof p.paused === "boolean") set({ paused: p.paused });
     if (p.integrations)
       set({ integrations: p.integrations as Record<string, { active?: boolean }> });
+    if (typeof p.live_ready === "boolean") set({ liveReady: p.live_ready });
   },
-  pushFeed: (item) =>
-    set((s) => ({ feed: [item, ...s.feed].slice(0, 80) })),
+  pushFeed: (item) => set((s) => ({ feed: [item, ...s.feed].slice(0, FEED_CAP) })),
+  pushFill: (fill) =>
+    set((s) => ({ recentFills: [fill, ...s.recentFills].slice(0, FILLS_CAP) })),
   setAgentRunning: (id) =>
     set((s) => ({
       busyAgent: id,
-      agents: s.agents.map((a) =>
-        a.id === id ? { ...a, status: "running" } : a
-      ),
+      agents: s.agents.map((a) => (a.id === id ? { ...a, status: "running" } : a)),
     })),
-  setAgentDone: (id, verdict, ms) => {
+  setAgentDone: (id, verdict, ms, reasons) => {
     const status =
       verdict === "BLOCK"
         ? "block"
         : verdict === "FILLED" || verdict === "SUBMITTED"
           ? "trade"
-          : verdict === "PASS" || verdict === "TRADE"
+          : verdict === "PASS" ||
+              verdict === "TRADE" ||
+              verdict === "BOOST" ||
+              verdict === "NEUTRAL" ||
+              verdict === "SKIP"
             ? "pass"
             : "idle";
     set((s) => ({
       busyAgent: s.busyAgent === id ? null : s.busyAgent,
       agents: s.agents.map((a) =>
-        a.id === id ? { ...a, status, lastMs: ms, lastVerdict: verdict } : a
+        a.id === id
+          ? {
+              ...a,
+              status,
+              lastMs: ms,
+              lastVerdict: verdict,
+              blockReasons: reasons,
+            }
+          : a
       ),
     }));
   },
+  decayAgent: (id) =>
+    set((s) => ({
+      agents: s.agents.map((a) =>
+        a.id === id && a.status !== "running" ? { ...a, status: "idle" } : a
+      ),
+    })),
   selectMint: (mint) => set({ selectedMint: mint }),
-  pushChart: (v) =>
-    set((s) => ({ chartPoints: [...s.chartPoints.slice(-39), v] })),
+  pushChart: (v) => set((s) => ({ chartPoints: [...s.chartPoints.slice(-39), v] })),
   setEquityPoints: (points) => set({ equityPoints: points }),
+  setLastScore: (n) => set({ lastScore: n }),
 }));

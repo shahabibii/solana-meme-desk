@@ -1,7 +1,6 @@
 export default function StatsPanel({
   stats,
   weights,
-  fomoEnabled,
 }: {
   stats: {
     total_trades: number;
@@ -12,52 +11,56 @@ export default function StatsPanel({
     total_pnl_pct: number;
   } | null;
   weights: Record<string, number>;
-  fomoEnabled: boolean;
 }) {
-  if (!stats) return <p className="muted">Loading stats…</p>;
+  const cards = [
+    { label: "Trades", value: stats ? String(stats.total_trades) : "—" },
+    {
+      label: "Win rate",
+      value:
+        stats?.win_rate != null ? `${(stats.win_rate * 100).toFixed(0)}%` : "—",
+    },
+    { label: "Blocks", value: stats ? String(stats.blocks) : "—" },
+    {
+      label: "Avg PnL",
+      value:
+        stats?.avg_pnl_pct != null
+          ? `${stats.avg_pnl_pct >= 0 ? "+" : ""}${stats.avg_pnl_pct.toFixed(1)}%`
+          : "—",
+    },
+  ];
+
+  const maxW = Math.max(...Object.values(weights), 1.5);
+
   return (
-    <div className="stats-panel">
-      <h2>Desk stats</h2>
-      <dl>
-        <div>
-          <dt>Trades</dt>
-          <dd>{stats.total_trades}</dd>
+    <>
+      <div className="glass" style={{ padding: "0.45rem" }}>
+        <h2>Desk stats</h2>
+        <div className="stats-grid">
+          {cards.map((c) => (
+            <div key={c.label} className="stat-card glass">
+              <dt>{c.label}</dt>
+              <dd>{c.value}</dd>
+            </div>
+          ))}
         </div>
-        <div>
-          <dt>Closed</dt>
-          <dd>{stats.closed_trades}</dd>
-        </div>
-        <div>
-          <dt>Blocks</dt>
-          <dd>{stats.blocks}</dd>
-        </div>
-        <div>
-          <dt>Win rate</dt>
-          <dd>
-            {stats.win_rate != null ? `${(stats.win_rate * 100).toFixed(0)}%` : "—"}
-          </dd>
-        </div>
-        <div>
-          <dt>Avg PnL</dt>
-          <dd>
-            {stats.avg_pnl_pct != null
-              ? `${stats.avg_pnl_pct >= 0 ? "+" : ""}${stats.avg_pnl_pct.toFixed(1)}%`
-              : "—"}
-          </dd>
-        </div>
-      </dl>
-      <h3>Learner weights</h3>
-      <ul className="weights">
-        {Object.entries(weights).map(([k, v]) => (
-          <li key={k}>
-            <span>{k}</span>
-            <strong>{v.toFixed(2)}</strong>
-          </li>
-        ))}
-      </ul>
-      <p className="muted tiny">
-        PumpPortal live · fomo {fomoEnabled ? "on" : "off — set COPE_API_KEY"}
-      </p>
-    </div>
+      </div>
+      <div className="glass" style={{ padding: "0.45rem" }}>
+        <h2>Learner weights</h2>
+        {Object.entries(weights)
+          .filter(([k]) => ["pump", "fomo", "convergence", "safety", "copy"].includes(k))
+          .map(([k, v]) => (
+            <div key={k} className="weight-bar">
+              <header>
+                <span>{k}</span>
+                <span>{v.toFixed(2)}</span>
+              </header>
+              <div className="track">
+                <div className="fill" style={{ width: `${Math.min(100, (v / maxW) * 100)}%` }} />
+              </div>
+            </div>
+          ))}
+      </div>
+      <div className="feeds-slot">FEEDS · not wired</div>
+    </>
   );
 }

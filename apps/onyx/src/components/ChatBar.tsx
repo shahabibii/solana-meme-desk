@@ -2,7 +2,7 @@ import { useState } from "react";
 import { startListening, voiceSupport } from "../voice";
 
 export default function ChatBar({
-  log,
+  lastMessage,
   onSend,
   voiceEnabled,
   onToggleVoice,
@@ -10,7 +10,7 @@ export default function ChatBar({
   onListenStart,
   onListenEnd,
 }: {
-  log: { role: string; text: string }[];
+  lastMessage: string;
   onSend: (text: string) => void;
   voiceEnabled: boolean;
   onToggleVoice: () => void;
@@ -37,14 +37,11 @@ export default function ChatBar({
 
   return (
     <footer className="chat-bar">
-      <div className="chat-log">
-        {log.slice(-4).map((m, i) => (
-          <p key={i} className={m.role}>
-            <strong>{m.role === "user" ? "You" : "Onyx"}:</strong> {m.text}
-          </p>
-        ))}
+      <div className="chat-last">
+        <strong>ONYX:</strong> {lastMessage}
       </div>
       <form
+        className="chat-form"
         onSubmit={(e) => {
           e.preventDefault();
           const t = input.trim();
@@ -53,23 +50,16 @@ export default function ChatBar({
           setInput("");
         }}
       >
-        <button
-          type="button"
-          className={`voice-toggle ${voiceEnabled ? "on" : ""}`}
-          onClick={onToggleVoice}
-          title={
-            voiceEnabled
-              ? "Mute Onyx voice (Maisie)"
-              : "Enable Onyx voice (Maisie)"
-          }
-          aria-pressed={voiceEnabled}
-        >
-          {voiceEnabled ? "🔊" : "🔇"}
-        </button>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask Onyx — status, mode, keys, backtest…"
+          aria-label="Chat with Onyx"
+        />
         {support.listen && (
           <button
             type="button"
-            className={listening ? "mic active" : "mic"}
+            className={listening ? "mic-active" : ""}
             onClick={handleVoice}
             disabled={listening}
             title="Voice command"
@@ -77,12 +67,15 @@ export default function ChatBar({
             {listening ? "…" : "🎤"}
           </button>
         )}
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask Onyx — status, mode, keys, backtest…"
-          aria-label="Chat with Onyx"
-        />
+        <button
+          type="button"
+          className={voiceEnabled ? "" : "muted-voice"}
+          onClick={onToggleVoice}
+          title={voiceEnabled ? "Mute" : "Unmute"}
+          aria-pressed={voiceEnabled}
+        >
+          {voiceEnabled ? "🔊" : "🔇"}
+        </button>
         <button type="submit">Send</button>
       </form>
     </footer>

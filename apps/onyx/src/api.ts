@@ -1,4 +1,5 @@
 import type { DeskMode } from "./store";
+import { API, wsOnyxUrl } from "./config";
 
 export type VoiceConfig = {
   name: string;
@@ -9,10 +10,8 @@ export type VoiceConfig = {
   preview_url: string;
 };
 
-const BASE = "";
-
 export async function fetchVoiceConfig(): Promise<VoiceConfig> {
-  const r = await fetch(`${BASE}/api/voice`);
+  const r = await fetch(API.voice);
   if (!r.ok) {
     return {
       name: "Maisie",
@@ -26,7 +25,7 @@ export async function fetchVoiceConfig(): Promise<VoiceConfig> {
 }
 
 export async function synthesizeSpeech(text: string): Promise<Blob> {
-  const r = await fetch(`${BASE}/api/tts`, {
+  const r = await fetch(API.tts, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
@@ -39,7 +38,7 @@ export async function synthesizeSpeech(text: string): Promise<Blob> {
 }
 
 export async function setDeskPaused(paused: boolean): Promise<{ paused: boolean; message: string }> {
-  const r = await fetch(`${BASE}/api/desk/pause`, {
+  const r = await fetch(API.deskPause, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paused }),
@@ -49,28 +48,28 @@ export async function setDeskPaused(paused: boolean): Promise<{ paused: boolean;
 }
 
 export async function refreshCopyWallets(): Promise<{ count: number; wallets: string[] }> {
-  const r = await fetch(`${BASE}/api/copy/refresh`, { method: "POST" });
+  const r = await fetch(API.copyRefresh, { method: "POST" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
 export async function fetchTrades(limit = 20): Promise<{ trades: Record<string, unknown>[] }> {
-  const r = await fetch(`${BASE}/api/trades?limit=${limit}`);
+  const r = await fetch(`${API.trades}?limit=${limit}`);
   return r.json();
 }
 
 export async function fetchStatus(): Promise<Record<string, unknown>> {
-  const r = await fetch(`${BASE}/api/status`);
+  const r = await fetch(API.status);
   return r.json();
 }
 
 export async function fetchMode(): Promise<{ mode: DeskMode; live_ready: boolean }> {
-  const r = await fetch(`${BASE}/api/mode`);
+  const r = await fetch(API.mode);
   return r.json();
 }
 
 export async function fetchEquityCurve(): Promise<{ points: { ts: string; equity_sol: number }[] }> {
-  const r = await fetch(`${BASE}/api/equity-curve`);
+  const r = await fetch(API.equityCurve);
   return r.json();
 }
 
@@ -82,29 +81,29 @@ export async function fetchStats(): Promise<{
   avg_pnl_pct: number | null;
   total_pnl_pct: number;
 }> {
-  const r = await fetch(`${BASE}/api/stats`);
+  const r = await fetch(API.stats);
   return r.json();
 }
 
 export async function runLearner(): Promise<{ weights: Record<string, number> }> {
-  const r = await fetch(`${BASE}/api/learner/run`, { method: "POST" });
+  const r = await fetch(API.learnerRun, { method: "POST" });
   return r.json();
 }
 
 export async function runBacktest(): Promise<Record<string, unknown>> {
-  const r = await fetch(`${BASE}/api/backtest/run`, { method: "POST" });
+  const r = await fetch(API.backtestRun, { method: "POST" });
   return r.json();
 }
 
 export async function fetchIntegrations(): Promise<{
   integrations: Record<string, { active?: boolean; ready?: boolean }>;
 }> {
-  const r = await fetch(`${BASE}/api/integrations`);
+  const r = await fetch(API.integrations);
   return r.json();
 }
 
 export async function chatOnyx(text: string): Promise<{ reply: string }> {
-  const r = await fetch(`${BASE}/api/chat`, {
+  const r = await fetch(API.chat, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
@@ -113,7 +112,7 @@ export async function chatOnyx(text: string): Promise<{ reply: string }> {
 }
 
 export async function setMode(mode: DeskMode, confirm = false): Promise<void> {
-  const r = await fetch(`${BASE}/api/mode`, {
+  const r = await fetch(API.mode, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode, confirm }),
@@ -125,8 +124,7 @@ export async function setMode(mode: DeskMode, confirm = false): Promise<void> {
 }
 
 export function connectOnyx(onMessage: (data: Record<string, unknown>) => void): WebSocket {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/onyx`);
+  const ws = new WebSocket(wsOnyxUrl());
   ws.onmessage = (ev) => {
     try {
       onMessage(JSON.parse(ev.data as string));

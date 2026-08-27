@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   chatOnyx,
   connectOnyx,
@@ -6,20 +6,26 @@ import {
   fetchIntegrations,
   fetchMode,
   fetchStatus,
+  runBacktest,
+  runLearner,
   setMode,
 } from "./api";
+import { BLOCK_SPEAK_THROTTLE_MS, POLL_MS } from "./config";
 import { useDesk, type FeedItem } from "./store";
-import { speakText, loadVoiceConfig } from "./voice";
-import AgentRail from "./components/AgentRail";
-import OnyxOrb from "./components/OnyxOrb";
-import SignalFeed from "./components/SignalFeed";
-import MintChart from "./components/MintChart";
-import ChatBar from "./components/ChatBar";
-import EquityCurve from "./components/EquityCurve";
-import StatsPanel from "./components/StatsPanel";
-import IntegrationsPanel from "./components/IntegrationsPanel";
-import TradeHistory from "./components/TradeHistory";
-import SniperHealth from "./components/SniperHealth";
+import { speakText, loadVoiceConfig, startListening, voiceSupport } from "./voice";
+import BootSequence from "./components/BootSequence";
+import AgentsPanel from "./components/cc/AgentsPanel";
+import CorePanel from "./components/cc/CorePanel";
+import EquityPanel from "./components/cc/EquityPanel";
+import FeedPanel from "./components/cc/FeedPanel";
+import HeaderBar from "./components/cc/HeaderBar";
+import MonitorPanel from "./components/cc/MonitorPanel";
+import OpsPanel from "./components/cc/OpsPanel";
+import OverviewPanel from "./components/cc/OverviewPanel";
+import Sidebar from "./components/cc/Sidebar";
+import TalkBar from "./components/cc/TalkBar";
+import TradeDrawer from "./components/TradeDrawer";
+import { useStarfield } from "./hooks/canvas";
 
 function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
   const ts = String(data.ts ?? new Date().toISOString());
@@ -29,67 +35,97 @@ function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
       return {
         id,
         ts,
-        kind: "candidate",
+        kind: "cand",
+        sev: "info",
         mint: String(data.mint),
-        text: `New ${data.symbol} via ${data.source}`,
+        text: `${data.symbol} candidate via ${data.source}`,
+        sub: String(data.mint).slice(0, 8) + "…",
       };
     case "mint.blocked":
       return {
         id,
         ts,
-        kind: "block",
+        kind: "blk",
+        sev: "warn",
         mint: String(data.mint),
-        text: `BLOCKED — ${(data.reasons as string[])?.join(", ")}`,
+        text: `${data.symbol ?? "mint"} blocked`,
+        sub: (data.reasons as string[])?.join(", ") ?? "safety",
       };
     case "trade.fill":
       return {
         id,
         ts,
         kind: "fill",
+        sev: "live",
         mint: String(data.mint),
-        text: `${data.side} ${data.sol} SOL (${data.mode})`,
+        text: `${String(data.side).toUpperCase()} ${data.symbol ?? ""} ${data.sol} ◎`,
+        sub: `${data.mode} · pumpportal`,
       };
     case "agent.done":
       return {
         id,
         ts,
-        kind: "agent",
+        kind: "ag",
+        sev: "info",
         mint: data.mint as string | undefined,
-        text: `${data.agent} → ${data.verdict} (${data.ms}ms)`,
+        text: `${data.agent} → ${data.verdict}`,
+        sub: `${data.ms}ms`,
       };
     case "desk.mode":
-      return { id, ts, kind: "mode", text: `Desk mode → ${data.mode}` };
+      return {
+        id,
+        ts,
+        kind: "mode",
+        sev: "mode",
+        text: `Mode → ${String(data.mode).toUpperCase()}`,
+        sub: "desk.mode",
+      };
     default:
       return null;
   }
 }
 
+function readMute(): boolean {
+  try {
+    return localStorage.getItem("onyx_mute") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const desk = useDesk();
+  const starsRef = useRef<HTMLCanvasElement>(null);
+  useStarfield(starsRef);
+
+  const [booted, setBooted] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const voiceRef = useRef(voiceEnabled);
-  voiceRef.current = voiceEnabled;
+  const [muted, setMuted] = useState(readMute);
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
   const lastBlockSpeak = useRef(0);
   const [listening, setListening] = useState(false);
-  const [chatLog, setChatLog] = useState<{ role: string; text: string }[]>([
-    { role: "onyx", text: "Solana meme desk online. Paper mode active — agents streaming." },
-  ]);
+  const [speaking, setSpeaking] = useState(false);
+  const [liveConfirm, setLiveConfirm] = useState(false);
+  const [tradeDrawer, setTradeDrawer] = useState(false);
+  const [backtestModal, setBacktestModal] = useState<Record<string, unknown> | null>(null);
+  const [lastReply, setLastReply] = useState("Solana meme desk online — agents streaming.");
+  const listenSession = useRef<{ stop: () => void } | null>(null);
+
+  const onBootDone = useCallback(() => setBooted(true), []);
 
   function say(text: string) {
-    speakText(text, voiceRef.current);
+    speakText(text, !mutedRef.current, {
+      onStart: () => setSpeaking(true),
+      onEnd: () => setSpeaking(false),
+    });
   }
 
+  const decayAgent = useCallback((id: string) => desk.decayAgent(id), [desk]);
+
   useEffect(() => {
-    void loadVoiceConfig().then((v) => {
-      if (v.active) {
-        setChatLog((l) => [
-          ...l,
-          { role: "onyx", text: `${v.label} voice online.` },
-        ]);
-      }
-    });
+    void loadVoiceConfig();
     void fetchStatus().then((s) => desk.applyStatus(s));
     void fetchMode().then((m) => {
       desk.setMode(m.mode);
@@ -102,8 +138,13 @@ export default function App() {
     const iv = setInterval(() => {
       void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
       void fetchStatus().then((s) => desk.applyStatus(s));
-    }, 15000);
+      void fetchMode().then((m) => {
+        desk.setMode(m.mode);
+        desk.setLiveReady(m.live_ready);
+      });
+    }, POLL_MS);
     return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -117,21 +158,47 @@ export default function App() {
           desk.setMode(data.mode as "paper" | "live");
           say(`Desk mode ${data.mode}`);
         }
-        if (data.type === "agent.start" && data.agent)
+        if (data.type === "agent.start" && data.agent) {
           desk.setAgentRunning(String(data.agent));
-        if (data.type === "agent.done" && data.agent)
-          desk.setAgentDone(String(data.agent), String(data.verdict), Number(data.ms));
+          desk.setLastScore(null);
+        }
+        if (data.type === "agent.done" && data.agent) {
+          const agent = String(data.agent);
+          const verdict = String(data.verdict);
+          desk.setAgentDone(
+            agent,
+            verdict,
+            Number(data.ms),
+            data.reasons as string[] | undefined
+          );
+          if (agent === "scorer" && data.score != null) {
+            desk.setLastScore(Number(data.score));
+          } else if (agent === "scorer" && /TRD|SKIP|TRADE/i.test(verdict)) {
+            const m = verdict.match(/(\d+)/);
+            if (m) desk.setLastScore(Number(m[1]));
+          }
+        }
         if (data.type === "mint.candidate" && data.mint)
           desk.selectMint(String(data.mint));
-        if (data.type === "position.update")
-          desk.pushChart(Number(data.upnl_pct ?? 50));
+        if (data.type === "position.update") {
+          desk.pushChart(Number(data.upnl_pct ?? 0));
+          if (data.mint) desk.selectMint(String(data.mint));
+        }
         if (data.type === "trade.fill") {
           say(`${data.side} fill ${data.sol} SOL`);
+          desk.pushFill({
+            id: `${data.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            symbol: String(data.symbol ?? "???"),
+            sol: Number(data.sol ?? 0),
+            side: String(data.side ?? "buy"),
+            ts: String(data.ts ?? new Date().toISOString()),
+          });
+          void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
+          void fetchStatus().then((s) => desk.applyStatus(s));
         }
-        // Blocks are normal on Pump.fun — don't spam voice (max once per 2 min).
         if (data.type === "mint.blocked") {
           const now = Date.now();
-          if (now - lastBlockSpeak.current > 120_000) {
+          if (now - lastBlockSpeak.current > BLOCK_SPEAK_THROTTLE_MS) {
             lastBlockSpeak.current = now;
             say("Safety filtering launches — blocks are normal on Pump.fun.");
           }
@@ -147,178 +214,341 @@ export default function App() {
     };
     connect();
     return () => {
-      clearTimeout(retry);
+      clearTimeout(retry!);
       ws?.close();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function toggleMode() {
+  async function applyMode(next: "paper" | "live") {
     setModeError(null);
-    const next = desk.mode === "paper" ? "live" : "paper";
-    if (next === "live") {
-      const ok = window.confirm(
-        "Switch to LIVE mode? Real SOL will be at risk. Continue?"
-      );
-      if (!ok) return;
+    if (next === "live" && !desk.liveReady) {
+      setModeError("WALLET NOT READY");
+      setLiveConfirm(false);
+      setLastReply("Wallet not ready — keep paper mode.");
+      say("Wallet not ready.");
+      return;
     }
     setModeBusy(true);
     try {
       await setMode(next, next === "live");
       desk.setMode(next);
-      const msg = `Mode set to ${next.toUpperCase()}.`;
-      setChatLog((l) => [...l, { role: "onyx", text: msg }]);
+      const msg = next === "live" ? "Live mode armed." : "Paper mode restored.";
+      setLastReply(msg);
       say(msg);
     } catch (e) {
       setModeError(e instanceof Error ? e.message : "Mode switch failed");
     } finally {
       setModeBusy(false);
+      setLiveConfirm(false);
     }
   }
 
   async function handleChat(text: string) {
-    setChatLog((l) => [...l, { role: "user", text }]);
+    setLastReply("…");
     try {
       const { reply } = await chatOnyx(text);
-      setChatLog((l) => [...l, { role: "onyx", text: reply }]);
+      setLastReply(reply);
       say(reply);
     } catch {
-      const lower = text.toLowerCase();
-      let reply = "Monitoring agents. Ask: status, mode, keys, backtest.";
-      if (lower.includes("status"))
-        reply = `${desk.mode.toUpperCase()} · ${desk.equitySol.toFixed(3)} SOL · ${desk.positions.length} open`;
-      setChatLog((l) => [...l, { role: "onyx", text: reply }]);
+      const reply = `${desk.mode.toUpperCase()} · ${desk.equitySol.toFixed(3)} SOL · ${desk.positions.length} open`;
+      setLastReply(reply);
       say(reply);
     }
   }
 
   function notify(text: string) {
-    setChatLog((l) => [...l, { role: "onyx", text }]);
+    setLastReply(text);
     say(text);
   }
 
-  const stats = desk.stats as { blocks?: number; total_trades?: number } | null;
+  function toggleListen() {
+    if (!voiceSupport().listen) return;
+    if (listening) {
+      listenSession.current?.stop();
+      setListening(false);
+      return;
+    }
+    setListening(true);
+    listenSession.current = startListening({
+      onFinal: (t) => {
+        void handleChat(t);
+        setListening(false);
+      },
+      onError: () => setListening(false),
+      onEnd: () => setListening(false),
+    });
+    if (!listenSession.current) setListening(false);
+  }
 
-  const orbState = useMemo(() => {
-    if (desk.busyAgent) return "active";
-    if (desk.mode === "live") return "armed";
-    return "idle";
-  }, [desk.busyAgent, desk.mode]);
+  function toggleMute() {
+    setMuted((m) => {
+      const next = !m;
+      try {
+        localStorage.setItem("onyx_mute", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
+
+  async function runCommand(cmd: string) {
+    switch (cmd) {
+      case "trade_log":
+      case "positions":
+        setTradeDrawer(true);
+        return;
+      case "settings":
+        notify("Settings panel coming soon.");
+        return;
+      case "status": {
+        const s = await fetchStatus();
+        desk.applyStatus(s);
+        const st = s.stats as { blocks?: number; total_trades?: number } | undefined;
+        const w = s.wallet as { open_positions?: number; equity_sol?: number } | undefined;
+        notify(
+          `${String(s.mode).toUpperCase()} · ${Number(w?.equity_sol ?? 0).toFixed(3)} SOL · ${w?.open_positions ?? 0} open · ${st?.blocks ?? 0} blocks`
+        );
+        return;
+      }
+      case "learner": {
+        const r = await runLearner();
+        desk.applyStatus(await fetchStatus());
+        notify(
+          `Learner: ${Object.entries(r.weights)
+            .map(([k, v]) => `${k}=${v.toFixed(2)}`)
+            .join(", ")}`
+        );
+        return;
+      }
+      case "backtest": {
+        const r = await runBacktest();
+        setBacktestModal(r);
+        const n = Number(r.round_trips ?? 0);
+        notify(
+          n
+            ? `Backtest: ${n} RT, win ${(Number(r.win_rate ?? 0) * 100).toFixed(0)}%`
+            : String(r.message ?? "No closed trades yet")
+        );
+        return;
+      }
+      case "keys": {
+        const i = await fetchIntegrations();
+        desk.applyStatus({ integrations: i.integrations });
+        const active = Object.entries(i.integrations)
+          .filter(([, v]) => v.active)
+          .map(([k]) => k);
+        notify(`Active: ${active.join(", ") || "RPC only"}`);
+        return;
+      }
+      case "blocks": {
+        const { reply } = await chatOnyx("blocks");
+        notify(reply);
+        return;
+      }
+      default:
+        void handleChat(cmd);
+    }
+  }
+
+  const stats = desk.stats as {
+    blocks?: number;
+    total_trades?: number;
+    win_rate?: number | null;
+    avg_pnl_pct?: number | null;
+    closed_trades?: number;
+    total_pnl_pct?: number;
+  } | null;
+
+  const exposure = useMemo(() => {
+    if (desk.equitySol <= 0) return 0;
+    const used = Math.max(0, desk.equitySol - desk.cashSol);
+    return Math.min(100, (used / desk.equitySol) * 100);
+  }, [desk.equitySol, desk.cashSol]);
+
+  const sessionPct = useMemo(() => {
+    if (typeof stats?.total_pnl_pct === "number") return stats.total_pnl_pct;
+    return null;
+  }, [stats]);
+
+  const coreLabel = desk.busyAgent
+    ? `ACTIVE · EVALUATING ${desk.busyAgent.toUpperCase()}`
+    : "ACTIVE · SCANNING";
+
+  const copyPubkey = () => {
+    if (desk.walletPubkey) {
+      void navigator.clipboard.writeText(desk.walletPubkey);
+      notify("Pubkey copied.");
+    }
+  };
 
   return (
-    <div className="onyx-shell">
-      <div className="grid-bg" aria-hidden />
-      <header className="top-bar">
-        <div className="brand">
-          <span className="brand-mark">◈</span>
-          <div>
-            <h1>ONYX</h1>
-            <p>Solana Meme Desk</p>
+    <>
+      <canvas id="stars" ref={starsRef} />
+      <div className="scan" aria-hidden />
+      {!booted && <BootSequence onDone={onBootDone} />}
+
+      <div className={`frame ${booted ? "on" : ""}`} id="frame">
+        <Sidebar
+          equitySol={desk.equitySol}
+          cashSol={desk.cashSol}
+          onChainSol={desk.onChainSol}
+          pubkey={desk.walletPubkey}
+          liveReady={desk.liveReady}
+          positionsCount={desk.positions.length}
+          weights={desk.learnerWeights}
+          listening={listening}
+          voiceActive={speaking}
+          onListen={toggleListen}
+          onCommand={(c) => void runCommand(c)}
+          onCopyPubkey={copyPubkey}
+        />
+
+        <HeaderBar
+          connected={desk.connected}
+          mode={desk.mode}
+          liveReady={desk.liveReady}
+          pubkey={desk.walletPubkey}
+          modeBusy={modeBusy}
+          onPaper={() => void applyMode("paper")}
+          onLiveRequest={() => setLiveConfirm(true)}
+          onCopyPubkey={copyPubkey}
+        />
+
+        <div className="main" style={{ ["--i" as string]: 0 }}>
+          <div className="grid">
+            <OverviewPanel
+              coreLabel={coreLabel}
+              equitySol={desk.equitySol}
+              cashSol={desk.cashSol}
+              connected={desk.connected}
+              blocks={stats?.blocks ?? 0}
+              trades={stats?.total_trades ?? 0}
+              winRate={stats?.win_rate ?? null}
+              positions={desk.positions}
+              selectedMint={desk.selectedMint}
+              onSelect={(m) => desk.selectMint(m)}
+              onViewAll={() => setTradeDrawer(true)}
+            />
+            <CorePanel
+              active={Boolean(desk.busyAgent)}
+              speaking={speaking}
+              armed={desk.mode === "live"}
+              mode={desk.mode}
+              busyAgent={desk.busyAgent}
+              lastScore={desk.lastScore}
+            />
+            <FeedPanel items={desk.feed} onSelect={(m) => desk.selectMint(m)} />
+            <AgentsPanel agents={desk.agents} onDecay={decayAgent} />
+            <MonitorPanel
+              winRate={stats?.win_rate ?? null}
+              exposure={exposure}
+              safetyW={desk.learnerWeights.safety ?? 1}
+              trades={stats?.total_trades ?? 0}
+              blocks={stats?.blocks ?? 0}
+              avgPnl={stats?.avg_pnl_pct ?? null}
+            />
+            <EquityPanel
+              equitySol={desk.equitySol}
+              points={desk.equityPoints}
+              avgPnl={stats?.avg_pnl_pct ?? null}
+              sessionPct={sessionPct}
+            />
+            <OpsPanel
+              integrations={desk.integrations}
+              fills={desk.recentFills}
+              onViewFills={() => setTradeDrawer(true)}
+            />
           </div>
         </div>
-        <div className="mode-toggle">
-          <button
-            type="button"
-            className={desk.mode === "paper" ? "active paper" : ""}
-            onClick={() => desk.mode !== "paper" && void toggleMode()}
-            disabled={modeBusy}
-          >
-            Paper
-          </button>
-          <button
-            type="button"
-            className={desk.mode === "live" ? "active live" : ""}
-            onClick={() => desk.mode !== "live" && void toggleMode()}
-            disabled={modeBusy}
-            title={!desk.liveReady ? "Live needs SOLANA_PRIVATE_KEY" : undefined}
-          >
-            Live
-          </button>
-        </div>
-        <div className="wallet-pill">
-          <span>{desk.mode === "paper" ? "Paper wallet" : "Live wallet"}</span>
-          <strong>
-            {(desk.mode === "live" && desk.onChainSol != null
-              ? desk.onChainSol
-              : desk.equitySol
-            ).toFixed(3)}{" "}
-            SOL
-          </strong>
-          {desk.mode === "live" && desk.onChainSol != null && (
-            <span className="muted tiny"> on-chain</span>
-          )}
-          <em className={desk.connected ? "ok" : "bad"}>
-            {desk.connected ? "stream live" : "reconnecting…"}
-          </em>
-        </div>
-      </header>
-      {modeError && <p className="mode-error">{modeError}</p>}
 
-      <VitalsStrip
-        mode={desk.mode}
-        connected={desk.connected}
-        liveReady={desk.liveReady}
-        busyAgent={desk.busyAgent}
-        blocks={stats?.blocks ?? 0}
-        trades={stats?.total_trades ?? 0}
-        openPositions={desk.positions.length}
-      />
+        <TalkBar
+          listening={listening}
+          speaking={speaking}
+          muted={muted}
+          lastReply={lastReply}
+          onToggleListen={toggleListen}
+          onToggleMute={toggleMute}
+          onSend={(t) => void handleChat(t)}
+        />
+      </div>
 
-      <main className="desk-grid">
-        <AgentRail agents={desk.agents} />
-        <section className="center-stage">
-          <EquityCurve points={desk.equityPoints} />
-          <MintChart points={desk.chartPoints} mint={desk.selectedMint} />
-          <OnyxOrb state={orbState} mode={desk.mode} agent={desk.busyAgent} />
-          <div className="positions">
-            <h3>Open</h3>
-            {desk.positions.length === 0 ? (
-              <p className="muted">No positions — PumpPortal + Safety scanning…</p>
-            ) : (
-              <ul>
-                {desk.positions.map((p) => (
-                  <li key={p.mint}>
-                    <strong>{p.symbol}</strong>
-                    <span>{p.entry_sol.toFixed(3)} SOL</span>
-                    {p.upnl_pct != null && (
-                      <span className={p.upnl_pct >= 0 ? "up" : "down"}>
-                        {p.upnl_pct >= 0 ? "+" : ""}
-                        {p.upnl_pct.toFixed(1)}%
-                      </span>
-                    )}
-                    <code>{p.mint.slice(0, 8)}…</code>
-                  </li>
-                ))}
-              </ul>
-            )}
+      {modeError && (
+        <p className="mode-banner" role="alert">
+          {modeError}
+        </p>
+      )}
+
+      {liveConfirm && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal p" role="dialog" aria-labelledby="live-title">
+            <div className="ph">
+              <i />
+              Confirm Live
+              <span className="tail" />
+            </div>
+            <h2 id="live-title">Arm live execution?</h2>
+            <p>Real PumpPortal orders. SOL is at risk.</p>
+            <div className="modal-actions">
+              <button type="button" className="cmd" onClick={() => setLiveConfirm(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="cmd primary"
+                onClick={() => void applyMode("live")}
+                disabled={modeBusy}
+              >
+                Arm LIVE
+              </button>
+            </div>
           </div>
-        </section>
-        <aside className="right-col">
-          <CommandDeck
-            onNotify={notify}
-            onRefresh={(s) => desk.applyStatus(s)}
-            paused={desk.paused}
-          />
-          <IntegrationsPanel integrations={desk.integrations} />
-          <SniperHealth health={desk.sniperHealth as Parameters<typeof SniperHealth>[0]["health"]} />
-          <TradeHistory />
-          <StatsPanel
-            stats={desk.stats as Parameters<typeof StatsPanel>[0]["stats"]}
-            weights={desk.learnerWeights}
-            fomoEnabled={desk.fomoEnabled}
-          />
-          <SignalFeed items={desk.feed} onSelect={(m) => desk.selectMint(m)} />
-        </aside>
-      </main>
+        </div>
+      )}
 
-      <ChatBar
-        log={chatLog}
-        onSend={(t) => void handleChat(t)}
-        voiceEnabled={voiceEnabled}
-        onToggleVoice={() => setVoiceEnabled((v) => !v)}
-        listening={listening}
-        onListenStart={() => setListening(true)}
-        onListenEnd={() => setListening(false)}
-      />
-    </div>
+      {backtestModal && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setBacktestModal(null)}
+        >
+          <div
+            className="modal p"
+            role="dialog"
+            onClick={(e) => e.stopPropagation()}
+            aria-labelledby="bt-title"
+          >
+            <div className="ph">
+              <i />
+              Backtest
+              <span className="tail" />
+            </div>
+            <h2 id="bt-title">Results</h2>
+            <p className="bt-body">
+              Round-trips: {String(backtestModal.round_trips ?? "—")}
+              <br />
+              Win rate:{" "}
+              {backtestModal.win_rate != null
+                ? `${(Number(backtestModal.win_rate) * 100).toFixed(0)}%`
+                : "—"}
+              <br />
+              Sharpe: {String(backtestModal.sharpe ?? "—")}
+              <br />
+              {backtestModal.by_source
+                ? `By source: ${JSON.stringify(backtestModal.by_source)}`
+                : String(backtestModal.message ?? "")}
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="cmd primary" onClick={() => setBacktestModal(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <TradeDrawer open={tradeDrawer} onClose={() => setTradeDrawer(false)} />
+    </>
   );
 }
