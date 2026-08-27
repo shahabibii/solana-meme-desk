@@ -274,8 +274,36 @@ body{background:var(--bg);color:var(--txt);font-family:var(--body);overflow:hidd
   color:var(--violet);cursor:pointer;font-size:13px;transition:.2s}
 .icon-btn:hover{border-color:var(--line-hi);color:var(--lav)}
 .icon-btn.muted{color:var(--pink)}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}
- .frame>*,.grid>*{opacity:1;transform:none}}
+/* Windows "Animation effects: Off" sets prefers-reduced-motion.
+   html.onyx-motion (user override) keeps the command deck alive. */
+@media (prefers-reduced-motion:reduce){
+  html:not(.onyx-motion) .jv-ring-outer,
+  html:not(.onyx-motion) .jv-ring-mid,
+  html:not(.onyx-motion) .jv-ring-inner,
+  html:not(.onyx-motion) .jv-sweep,
+  html:not(.onyx-motion) .jv-hex,
+  html:not(.onyx-motion) .ripple,
+  html:not(.onyx-motion) .micring::before,
+  html:not(.onyx-motion) #boot polygon{animation:none!important}
+  html:not(.onyx-motion) .frame>*,
+  html:not(.onyx-motion) .grid>*{opacity:1;transform:none;animation:none!important}
+  html:not(.onyx-motion) .fc,
+  html:not(.onyx-motion) .rf{animation:none!important}
+}
+html.onyx-still .jv-ring-outer,
+html.onyx-still .jv-ring-mid,
+html.onyx-still .jv-ring-inner,
+html.onyx-still .jv-sweep,
+html.onyx-still .jv-hex,
+html.onyx-still .ripple,
+html.onyx-still .micring::before{animation:none!important}
+
+.motion-banner{position:fixed;left:50%;bottom:72px;transform:translateX(-50%);z-index:90;
+  display:flex;align-items:center;gap:12px;max-width:min(520px,92vw);
+  background:rgba(10,7,24,.94);border:1px solid var(--line-hi);border-radius:10px;
+  padding:10px 14px;box-shadow:0 8px 32px rgba(0,0,0,.45)}
+.motion-banner p{margin:0;font-family:var(--mono);font-size:11px;color:var(--lav);line-height:1.4}
+.motion-banner .cmd{white-space:nowrap;padding:8px 12px}
 
 /* modals + drawer */
 .modal-backdrop{position:fixed;inset:0;z-index:80;background:rgba(6,4,15,.72);backdrop-filter:blur(4px);

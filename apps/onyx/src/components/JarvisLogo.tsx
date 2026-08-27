@@ -31,7 +31,6 @@ export default function JarvisLogo() {
         @keyframes jv-rot-ccw{from{transform:rotate(360deg)}to{transform:rotate(0deg)}}
         @keyframes jv-pulse{0%,100%{opacity:.65}50%{opacity:1}}
         .core.speaking .jv-hex{animation-duration:.8s}
-        @media (prefers-reduced-motion:reduce){.jv-ring-outer,.jv-ring-mid,.jv-ring-inner,.jv-sweep,.jv-hex{animation:none}}
       `}</style>
       <circle cx="200" cy="170" r="160" fill="url(#jarvisGlow)" />
       <g className="jv-ring-outer">

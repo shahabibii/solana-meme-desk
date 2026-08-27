@@ -13,6 +13,13 @@ import {
 import { BLOCK_SPEAK_THROTTLE_MS, POLL_MS } from "./config";
 import { useDesk, type FeedItem } from "./store";
 import { speakText, loadVoiceConfig, startListening, voiceSupport } from "./voice";
+import {
+  applyMotionClass,
+  getMotionPref,
+  motionEnabled,
+  osPrefersReducedMotion,
+  setMotionPref,
+} from "./motion";
 import BootSequence from "./components/BootSequence";
 import AgentsPanel from "./components/cc/AgentsPanel";
 import CorePanel from "./components/cc/CorePanel";
@@ -112,8 +119,22 @@ export default function App() {
   const [backtestModal, setBacktestModal] = useState<Record<string, unknown> | null>(null);
   const [lastReply, setLastReply] = useState("Solana meme desk online — agents streaming.");
   const listenSession = useRef<{ stop: () => void } | null>(null);
+  const [showMotionBanner, setShowMotionBanner] = useState(false);
 
   const onBootDone = useCallback(() => setBooted(true), []);
+
+  useEffect(() => {
+    applyMotionClass();
+    // Windows Animation Effects Off → prefers-reduced-motion; offer override once.
+    if (osPrefersReducedMotion() && getMotionPref() === "auto" && !motionEnabled()) {
+      setShowMotionBanner(true);
+    }
+  }, []);
+
+  function enableDeskMotion() {
+    setMotionPref("on");
+    setShowMotionBanner(false);
+  }
 
   function say(text: string) {
     speakText(text, !mutedRef.current, {
@@ -545,6 +566,28 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {showMotionBanner && (
+        <div className="motion-banner" role="status">
+          <p>
+            Windows has animations off, so the desk looks frozen. Enable motion for the
+            sphere + logo (saved on this PC).
+          </p>
+          <button type="button" className="cmd primary" onClick={enableDeskMotion}>
+            Enable motion
+          </button>
+          <button
+            type="button"
+            className="cmd"
+            onClick={() => {
+              setMotionPref("off");
+              setShowMotionBanner(false);
+            }}
+          >
+            Keep still
+          </button>
         </div>
       )}
 

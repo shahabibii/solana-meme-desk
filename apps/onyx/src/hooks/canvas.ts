@@ -1,8 +1,30 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { motionEnabled, subscribeMotion } from "../motion";
 
 type Star = { x: number; y: number; r: number; s: number; a: number };
 
+function useMotionFlag(): boolean {
+  const [on, setOn] = useState(() => motionEnabled());
+  useEffect(() => subscribeMotion(() => setOn(motionEnabled())), []);
+  return on;
+}
+
+function usePageVisible(): boolean {
+  const [vis, setVis] = useState(() => typeof document !== "undefined" && !document.hidden);
+  useEffect(() => {
+    const onVis = () => setVis(!document.hidden);
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+  return vis;
+}
+
 export function useStarfield(canvasRef: React.RefObject<HTMLCanvasElement | null>) {
+  const motion = useMotionFlag();
+  const visible = usePageVisible();
+  const motionRef = useRef(motion);
+  motionRef.current = motion;
+
   useEffect(() => {
     const sc = canvasRef.current;
     if (!sc) return;
@@ -10,7 +32,6 @@ export function useStarfield(canvasRef: React.RefObject<HTMLCanvasElement | null
     if (!sx) return;
     let stars: Star[] = [];
     let raf = 0;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     function init() {
       sc!.width = window.innerWidth;
@@ -25,6 +46,24 @@ export function useStarfield(canvasRef: React.RefObject<HTMLCanvasElement | null
           a: Math.random() * 6,
         });
       }
+      draw(false);
+    }
+
+    function draw(animate: boolean) {
+      sx!.clearRect(0, 0, sc!.width, sc!.height);
+      for (const st of stars) {
+        if (animate) {
+          st.y -= st.s;
+          if (st.y < 0) st.y = sc!.height;
+          st.a += 0.012;
+        }
+        sx!.globalAlpha = 0.22 + Math.sin(st.a) * 0.18;
+        sx!.fillStyle = "#B09AD0";
+        sx!.beginPath();
+        sx!.arc(st.x, st.y, st.r, 0, 7);
+        sx!.fill();
+      }
+      sx!.globalAlpha = 1;
     }
 
     init();
@@ -32,20 +71,11 @@ export function useStarfield(canvasRef: React.RefObject<HTMLCanvasElement | null
     window.addEventListener("resize", onResize);
 
     function loop() {
-      sx!.clearRect(0, 0, sc!.width, sc!.height);
-      if (!reduced) {
-        for (const st of stars) {
-          st.y -= st.s;
-          if (st.y < 0) st.y = sc!.height;
-          st.a += 0.012;
-          sx!.globalAlpha = 0.22 + Math.sin(st.a) * 0.18;
-          sx!.fillStyle = "#B09AD0";
-          sx!.beginPath();
-          sx!.arc(st.x, st.y, st.r, 0, 7);
-          sx!.fill();
-        }
-        sx!.globalAlpha = 1;
+      if (!visible) {
+        raf = requestAnimationFrame(loop);
+        return;
       }
+      draw(motionRef.current);
       raf = requestAnimationFrame(loop);
     }
     raf = requestAnimationFrame(loop);
@@ -53,7 +83,7 @@ export function useStarfield(canvasRef: React.RefObject<HTMLCanvasElement | null
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", onResize);
     };
-  }, [canvasRef]);
+  }, [canvasRef, visible]);
 }
 
 const N = 240;
@@ -72,6 +102,10 @@ export function useSphere(
 ) {
   const activeRef = useRef(active);
   activeRef.current = active;
+  const motion = useMotionFlag();
+  const visible = usePageVisible();
+  const motionRef = useRef(motion);
+  motionRef.current = motion;
 
   useEffect(() => {
     const sp = canvasRef.current;
@@ -80,17 +114,17 @@ export function useSphere(
     if (!spc) return;
     let ang = 0;
     let raf = 0;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    function loop() {
-      const W = (sp!.width = sp!.offsetWidth * 2);
-      const H = (sp!.height = sp!.offsetHeight * 2);
+    function render() {
+      const W = (sp!.width = Math.max(1, sp!.offsetWidth) * 2);
+      const H = (sp!.height = Math.max(1, sp!.offsetHeight) * 2);
+      if (W < 4 || H < 4) return;
       const cx = W / 2;
       const cy = H / 2;
       const R = Math.min(W, H) * 0.42;
       const F = 3.2;
       spc!.clearRect(0, 0, W, H);
-      if (!reduced) {
+      if (motionRef.current) {
         ang += activeRef.current ? 0.007 : 0.0028;
       }
       const tilt = 0.35;
@@ -115,15 +149,28 @@ export function useSphere(
       spc!.lineWidth = 1;
       for (let k = 0; k < 3; k++) {
         spc!.beginPath();
-        spc!.ellipse(cx, cy, R * 0.98, R * (0.3 + k * 0.24), ang * (k % 2 ? 1 : -1) * 0.6 + k, 0, 7);
+        spc!.ellipse(
+          cx,
+          cy,
+          R * 0.98,
+          R * (0.3 + k * 0.24),
+          ang * (k % 2 ? 1 : -1) * 0.6 + k,
+          0,
+          7
+        );
         spc!.stroke();
       }
       spc!.globalAlpha = 1;
+    }
+
+    function loop() {
+      if (visible) render();
       raf = requestAnimationFrame(loop);
     }
+    render();
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [canvasRef]);
+  }, [canvasRef, visible]);
 }
 
 export function useWaveform(
@@ -134,6 +181,7 @@ export function useWaveform(
 ) {
   const activeRef = useRef(active);
   activeRef.current = active;
+  const visible = usePageVisible();
 
   useEffect(() => {
     const cv = canvasRef.current;
@@ -143,6 +191,10 @@ export function useWaveform(
     let raf = 0;
 
     function loop() {
+      if (!visible) {
+        raf = requestAnimationFrame(loop);
+        return;
+      }
       const W = (cv!.width = Math.max(1, cv!.offsetWidth) * 2);
       const H = (cv!.height = Math.max(1, cv!.offsetHeight) * 2);
       c!.clearRect(0, 0, W, H);
@@ -159,7 +211,7 @@ export function useWaveform(
     }
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [canvasRef, color, idleFrac]);
+  }, [canvasRef, color, idleFrac, visible]);
 }
 
 export function useAgentWave(
@@ -169,6 +221,7 @@ export function useAgentWave(
 ) {
   const runRef = useRef(running);
   runRef.current = running;
+  const visible = usePageVisible();
 
   useEffect(() => {
     const cv = canvasRef.current;
@@ -178,6 +231,10 @@ export function useAgentWave(
     let raf = 0;
 
     function loop() {
+      if (!visible) {
+        raf = requestAnimationFrame(loop);
+        return;
+      }
       const W = (cv!.width = Math.max(1, cv!.offsetWidth) * 2);
       const H = (cv!.height = Math.max(1, cv!.offsetHeight) * 2);
       c!.clearRect(0, 0, W, H);
@@ -194,7 +251,7 @@ export function useAgentWave(
     }
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [canvasRef, seed]);
+  }, [canvasRef, seed, visible]);
 }
 
 export function useEquityChart(
