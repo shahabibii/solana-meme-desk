@@ -43,11 +43,27 @@ def _extract_wallets(obj: Any, *, into: list[str], depth: int = 0) -> None:
                 "signer",
                 "user",
                 "account",
+                "solana_wallet",
+                "wallet_address",
             } and isinstance(val, str):
                 if _looks_like_wallet(val) and val not in into:
                     into.append(val)
                 continue
             _extract_wallets(val, into=into, depth=depth + 1)
+
+
+def _as_list(data: Any, *keys: str) -> list[Any]:
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in keys:
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
+        return [data]
+    return []
 
 
 class CopeClient:
@@ -56,6 +72,7 @@ class CopeClient:
     def __init__(self, api_key: str | None = None) -> None:
         self._key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._handles: list[str] = []
 
     @property
     def enabled(self) -> bool:
@@ -71,12 +88,88 @@ class CopeClient:
                     headers=self._headers,
                     params=params or {},
                 )
-                if r.status_code in (401, 404):
+                if r.status_code in (401, 404, 402):
                     return None
                 r.raise_for_status()
                 return r.json()
         except Exception:
             return None
+
+    async def _post_json(self, path: str, body: dict[str, Any]) -> Any:
+        if not self.enabled:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.post(
+                    f"{self.BASE}{path}",
+                    headers=self._headers,
+                    json=body,
+                )
+                if r.status_code in (401, 404, 402):
+                    return None
+                r.raise_for_status()
+                return r.json()
+        except Exception:
+            return None
+
+    async def sync_fomo(self, fomo_handle: str) -> dict[str, Any]:
+        """Import follows from a fomo.family profile into the Cope account."""
+        handle = fomo_handle.strip().lstrip("@")
+        data = await self._post_json("/account/sync-fomo", {"fomo_handle": handle})
+        return data if isinstance(data, dict) else {"ok": data is not None, "handle": handle}
+
+    async def follows(self) -> list[str]:
+        """Handles you follow on fomo.family (after sync-fomo)."""
+        data = await self._get_json("/account/follows")
+        handles: list[str] = []
+        for item in _as_list(data, "follows", "data", "handles"):
+            if isinstance(item, str):
+                handles.append(item.lstrip("@"))
+            elif isinstance(item, dict):
+                h = item.get("handle") or item.get("username") or item.get("name")
+                if h:
+                    handles.append(str(h).lstrip("@"))
+        self._handles = handles
+        return handles
+
+    async def leaderboard(self, *, timeframe: str = "7d", limit: int = 20) -> list[dict[str, Any]]:
+        data = await self._get_json(
+            "/leaderboard", params={"timeframe": timeframe, "limit": limit}
+        )
+        return _as_list(data, "traders", "leaderboard", "data")
+
+    async def search_traders(
+        self, *, chain: str = "solana", limit: int = 20, min_win_rate: float = 55
+    ) -> list[dict[str, Any]]:
+        data = await self._get_json(
+            "/traders/search",
+            params={
+                "chain": chain,
+                "limit": limit,
+                "min_win_rate": min_win_rate,
+                "sort_by": "pnl",
+            },
+        )
+        return _as_list(data, "traders", "data", "results")
+
+    async def activity(
+        self,
+        *,
+        handle: str | None = None,
+        action: str | None = "buy",
+        chain: str = "solana",
+        since: int | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"chain": chain, "limit": limit}
+        if handle:
+            params["handle"] = handle.lstrip("@")
+        if action:
+            params["action"] = action
+        if since is not None:
+            params["since"] = since
+        data = await self._get_json("/activity", params=params)
+        return _as_list(data, "activity", "events", "data", "trades")
 
     async def hot_tokens(self, limit: int = 10) -> list[dict[str, Any]]:
         data = await self._get_json("/tokens/hot", params={"limit": limit})
@@ -90,32 +183,61 @@ class CopeClient:
             return []
         return data if isinstance(data, list) else (data.get("events") or data.get("data") or [])
 
-    async def top_traders(self, limit: int = 20) -> list[str]:
-        """Resolve wallet addresses for copy-trading watchlist."""
+    def _handles_from_rows(self, rows: list[Any]) -> list[str]:
+        out: list[str] = []
+        for item in rows:
+            if isinstance(item, str):
+                out.append(item.lstrip("@"))
+            elif isinstance(item, dict):
+                h = item.get("handle") or item.get("username") or item.get("name")
+                if h:
+                    out.append(str(h).lstrip("@"))
+        return out
+
+    async def resolve_handles(self) -> list[str]:
+        """Follows first, else leaderboard / search elite Solana traders."""
+        handles = await self.follows()
+        if handles:
+            return handles[:20]
+        handles = self._handles_from_rows(await self.leaderboard(timeframe="7d", limit=15))
+        if handles:
+            return handles[:15]
+        handles = self._handles_from_rows(
+            await self.search_traders(chain="solana", limit=15, min_win_rate=55)
+        )
+        return handles[:15]
+
+    async def wallets_for_handles(self, handles: list[str], *, per_handle: int = 3) -> list[str]:
+        """Pull Solana wallets from recent activity for each handle."""
         wallets: list[str] = []
-        for path in (
-            "/traders/top",
-            "/traders",
-            "/watchlist",
-            "/traders/hot",
-            "/wallets/top",
-            "/smart-money",
-            "/leaders",
-        ):
-            data = await self._get_json(path, params={"limit": limit})
-            if not data:
-                continue
-            _extract_wallets(data, into=wallets)
-            if wallets:
+        for handle in handles[:12]:
+            rows = await self.activity(handle=handle, action=None, chain="solana", limit=per_handle)
+            _extract_wallets(rows, into=wallets)
+            if len(wallets) >= 30:
                 break
+        # Also try leaderboard/search payloads for embedded wallets
+        _extract_wallets(await self.leaderboard(limit=20), into=wallets)
+        _extract_wallets(await self.search_traders(limit=20), into=wallets)
+        seen: set[str] = set()
+        out: list[str] = []
+        for w in wallets:
+            if w not in seen:
+                seen.add(w)
+                out.append(w)
+        return out
 
-        # Fallback: scrape wallets embedded in hot/convergence payloads.
-        if len(wallets) < limit:
-            for item in await self.convergence(limit=15):
-                _extract_wallets(item, into=wallets)
-            for item in await self.hot_tokens(limit=15):
-                _extract_wallets(item, into=wallets)
+    async def top_traders(self, limit: int = 20) -> list[str]:
+        """Wallet addresses for PumpPortal subscribeAccountTrade."""
+        handles = await self.resolve_handles()
+        wallets = await self.wallets_for_handles(handles)
+        if wallets:
+            return wallets[:limit]
 
+        # Fallback scrape from hot/convergence
+        for item in await self.convergence(limit=15):
+            _extract_wallets(item, into=wallets)
+        for item in await self.hot_tokens(limit=15):
+            _extract_wallets(item, into=wallets)
         seen: set[str] = set()
         out: list[str] = []
         for w in wallets:
@@ -123,6 +245,50 @@ class CopeClient:
                 seen.add(w)
                 out.append(w)
         return out[:limit]
+
+    async def poll_follow_buys(self, handles: list[str] | None = None) -> list[MintCandidate]:
+        """Enqueue-ready candidates from fomo follows' recent Solana buys."""
+        handles = handles or self._handles or await self.resolve_handles()
+        out: list[MintCandidate] = []
+        seen_mints: set[str] = set()
+        for handle in handles[:10]:
+            for item in await self.activity(handle=handle, action="buy", chain="solana", limit=5):
+                mint = str(
+                    item.get("mint")
+                    or item.get("token_mint")
+                    or item.get("token")
+                    or item.get("tokenAddress")
+                    or ""
+                )
+                if len(mint) < 32 or mint in seen_mints:
+                    continue
+                seen_mints.add(mint)
+                sym = str(item.get("symbol") or item.get("ticker") or "FOMO")[:12]
+                trader_sol = item.get("sol_amount") or item.get("solAmount")
+                usd = item.get("usd_amount") or item.get("usd")
+                if trader_sol is None and usd:
+                    try:
+                        trader_sol = float(usd) / 150.0  # rough SOL estimate
+                    except (TypeError, ValueError):
+                        trader_sol = None
+                wallets: list[str] = []
+                _extract_wallets(item, into=wallets)
+                out.append(
+                    MintCandidate(
+                        mint=mint,
+                        symbol=sym,
+                        name=sym,
+                        source="copy",
+                        copy_boost=25,
+                        meta={
+                            "trader": wallets[0] if wallets else handle,
+                            "trader_sol": float(trader_sol) if trader_sol is not None else None,
+                            "fomo_handle": handle,
+                            "trade_event": item,
+                        },
+                    )
+                )
+        return out
 
     async def poll_candidates(self) -> list[MintCandidate]:
         out: list[MintCandidate] = []
@@ -156,4 +322,6 @@ class CopeClient:
                     meta={"hot": item},
                 )
             )
+        # Follow buys (uses counted activity quota — keep light)
+        out.extend(await self.poll_follow_buys())
         return out

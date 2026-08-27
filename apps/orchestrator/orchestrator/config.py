@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     pumpportal_api_key: str | None = None
     mock_stream: bool = False
     cope_poll_sec: int = 60
+    fomo_handle: str | None = None
 
     # Scoring / paper
     safety_min_score: int = 65

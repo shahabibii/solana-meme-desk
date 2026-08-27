@@ -124,6 +124,10 @@ class CopyWalletsBody(BaseModel):
     replace: bool = False
 
 
+class FomoSyncBody(BaseModel):
+    fomo_handle: str = Field(min_length=1, max_length=64)
+
+
 def _setup_checklist() -> dict[str, Any]:
     flags = settings.integration_flags()
     missing = []
@@ -363,6 +367,33 @@ async def set_copy_wallets(body: CopyWalletsBody) -> dict[str, Any]:
 
     wallets = await _desk.refresh_copy_wallets()
     return {"wallets": wallets, "count": len(wallets)}
+
+
+@app.post("/api/fomo/sync")
+async def sync_fomo_profile(body: FomoSyncBody) -> dict[str, Any]:
+    """Sync fomo.family follows → wallets for PumpPortal copy-trading."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    if not settings.cope_api_key:
+        raise HTTPException(400, detail="COPE_API_KEY not configured")
+    handle = body.fomo_handle.strip().lstrip("@")
+    # Persist handle for future refreshes (in-memory + env-style via data file)
+    settings.fomo_handle = handle
+    try:
+        (settings.data_dir / "fomo_handle.txt").write_text(handle)
+    except Exception:
+        pass
+    sync = await _desk.cope.sync_fomo(handle)
+    follows = await _desk.cope.follows()
+    wallets = await _desk.refresh_copy_wallets()
+    return {
+        "fomo_handle": handle,
+        "sync": sync,
+        "follows": follows,
+        "follow_count": len(follows),
+        "wallets": wallets,
+        "wallet_count": len(wallets),
+    }
 
 
 @app.get("/api/voice")

@@ -105,6 +105,8 @@ class DeskRuntime:
     async def refresh_copy_wallets(self) -> list[str]:
         wallets = list(self.copy_cfg.wallets)
         if self.cope.enabled:
+            if self.settings.fomo_handle:
+                await self.cope.sync_fomo(self.settings.fomo_handle)
             traders = await self.cope.top_traders(limit=self.copy_cfg.max_wallets)
             for w in traders:
                 if w not in wallets:
@@ -112,6 +114,22 @@ class DeskRuntime:
         self._copy_wallets = wallets[: self.copy_cfg.max_wallets]
         self._last_copy_refresh = time.time()
         return self._copy_wallets
+
+    def status_extra(self) -> dict:
+        base = {
+            "copy_trading": {
+                "enabled": self.copy_cfg.enabled,
+                "wallets": len(self._copy_wallets),
+                "pumpportal_required": bool(self.settings.pumpportal_api_key),
+                "fomo_handle": self.settings.fomo_handle,
+                "fomo_handles": list(self.cope._handles)[:20],
+            },
+            "daily_loss_sol": {
+                "paper": round(self.risk.daily_realized_loss_sol("paper"), 4),
+                "live": round(self.risk.daily_realized_loss_sol("live"), 4),
+            },
+        }
+        return base
 
     async def copy_wallet_poller(self, running: Callable[[], bool]) -> None:
         while running():
@@ -469,19 +487,6 @@ class DeskRuntime:
                 return f"take_profit_{tp}", lim.take_profit_sell_pct[i] / 100.0, tp
         return None, 1.0, None
 
-    def status_extra(self) -> dict:
-        return {
-            "copy_trading": {
-                "enabled": self.copy_cfg.enabled,
-                "wallets": len(self._copy_wallets),
-                "pumpportal_required": bool(self.settings.pumpportal_api_key),
-            },
-            "daily_loss_sol": {
-                "paper": round(self.risk.daily_realized_loss_sol("paper"), 4),
-                "live": round(self.risk.daily_realized_loss_sol("live"), 4),
-            },
-        }
-
 
 async def start_desk(
     settings: Settings,
@@ -499,6 +504,13 @@ async def start_desk(
     paper.limits = full.paper
     risk = RiskManager(full, journal)
     copy_cfg = load_copy_config(settings.config_dir, settings.data_dir)
+    # Restore persisted fomo handle from volume
+    handle_file = settings.data_dir / "fomo_handle.txt"
+    if handle_file.exists() and not settings.fomo_handle:
+        try:
+            settings.fomo_handle = handle_file.read_text().strip() or None
+        except Exception:
+            pass
     desk = DeskRuntime(
         settings, paper, live, journal, broadcast, risk, copy_cfg, get_paused, on_alert
     )
