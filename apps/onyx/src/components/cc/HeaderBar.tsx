@@ -31,7 +31,14 @@ export default function HeaderBar({
   useEffect(() => {
     const tick = () => {
       const d = new Date();
-      setClock(d.toTimeString().slice(0, 8));
+      setClock(
+        d.toLocaleTimeString("en-US", {
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+        }),
+      );
       setDateTxt(d.toDateString().toUpperCase());
     };
     tick();
