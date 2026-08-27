@@ -12,7 +12,7 @@ import {
 } from "./api";
 import { BLOCK_SPEAK_THROTTLE_MS, POLL_MS } from "./config";
 import { useDesk, type FeedItem } from "./store";
-import { speakText, loadVoiceConfig, startListening, voiceSupport } from "./voice";
+import { speakText, loadVoiceConfig, startListening, unlockAudio, voiceSupport } from "./voice";
 import {
   applyMotionClass,
   getMotionPref,
@@ -132,6 +132,7 @@ export default function App() {
   }, []);
 
   function enableDeskMotion() {
+    unlockAudio();
     setMotionPref("on");
     setShowMotionBanner(false);
   }
@@ -266,6 +267,7 @@ export default function App() {
   }
 
   async function handleChat(text: string) {
+    unlockAudio();
     setLastReply("…");
     try {
       const { reply } = await chatOnyx(text);
@@ -284,6 +286,7 @@ export default function App() {
   }
 
   function toggleListen() {
+    unlockAudio();
     if (!voiceSupport().listen) return;
     if (listening) {
       listenSession.current?.stop();
@@ -303,12 +306,20 @@ export default function App() {
   }
 
   function toggleMute() {
+    unlockAudio();
     setMuted((m) => {
       const next = !m;
       try {
         localStorage.setItem("onyx_mute", next ? "1" : "0");
       } catch {
         /* ignore */
+      }
+      // Unmuting should be obvious; speak a short cue once audio is unlocked.
+      if (!next) {
+        speakText("Voice on.", true, {
+          onStart: () => setSpeaking(true),
+          onEnd: () => setSpeaking(false),
+        });
       }
       return next;
     });

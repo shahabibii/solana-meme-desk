@@ -74,10 +74,12 @@ export default function TalkBar({
         <button
           type="button"
           className={`icon-btn ${muted ? "muted" : ""}`}
-          title={muted ? "Unmute" : "Mute voice"}
+          title={muted ? "Voice muted — click to unmute" : "Mute voice"}
+          aria-pressed={muted}
+          aria-label={muted ? "Unmute voice (currently muted)" : "Mute voice"}
           onClick={onToggleMute}
         >
-          {muted ? "🔇" : "🔊"}
+          {muted ? "MUTED" : "🔊"}
         </button>
       </form>
     </div>

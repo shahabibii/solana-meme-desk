@@ -22,6 +22,8 @@ type RecognitionLike = {
 let voiceConfig: VoiceConfig | null = null;
 let currentAudio: HTMLAudioElement | null = null;
 let speakGeneration = 0;
+let synthKeepalive: ReturnType<typeof setInterval> | null = null;
+let audioUnlocked = false;
 
 function getRecognitionCtor(): (new () => RecognitionLike) | null {
   const w = window as Window & {
@@ -38,6 +40,31 @@ export function voiceSupport(): VoiceSupport {
   };
 }
 
+/** Call from a user gesture so Chrome allows Audio play + speechSynthesis. */
+export function unlockAudio(): void {
+  if (typeof window === "undefined") return;
+  audioUnlocked = true;
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.resume();
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    const silent = new Audio(
+      "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="
+    );
+    silent.volume = 0;
+    void silent.play().then(() => {
+      silent.pause();
+      silent.src = "";
+    }).catch(() => undefined);
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function loadVoiceConfig(): Promise<VoiceConfig> {
   if (voiceConfig) return voiceConfig;
   voiceConfig = await fetchVoiceConfig();
@@ -48,8 +75,25 @@ export function getVoiceLabel(): string {
   return voiceConfig?.label ?? "Maisie — friendly casual neighbor";
 }
 
+function clearSynthKeepalive(): void {
+  if (synthKeepalive != null) {
+    clearInterval(synthKeepalive);
+    synthKeepalive = null;
+  }
+}
+
+function resumeSpeechSynthesis(): void {
+  if (!("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.resume();
+  } catch {
+    /* ignore */
+  }
+}
+
 function stopPlayback(): void {
   speakGeneration += 1;
+  clearSynthKeepalive();
   if (currentAudio) {
     currentAudio.pause();
     currentAudio.src = "";
@@ -92,31 +136,55 @@ function pickBrowserVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice 
 
 function speakBrowser(clean: string, onEnd?: () => void): void {
   if (!("speechSynthesis" in window)) {
+    console.warn("[onyx voice] speechSynthesis unavailable");
     onEnd?.();
     return;
   }
+  const synth = window.speechSynthesis;
   const speakNow = () => {
+    resumeSpeechSynthesis();
     const u = new SpeechSynthesisUtterance(clean);
     u.rate = 0.94;
     u.pitch = 1.08;
     u.lang = "en-GB";
-    const preferred = pickBrowserVoice(window.speechSynthesis.getVoices());
+    const preferred = pickBrowserVoice(synth.getVoices());
     if (preferred) {
       u.voice = preferred;
       u.lang = preferred.lang || "en-GB";
     }
-    u.onend = () => onEnd?.();
-    u.onerror = () => onEnd?.();
-    window.speechSynthesis.speak(u);
+    u.onend = () => {
+      clearSynthKeepalive();
+      onEnd?.();
+    };
+    u.onerror = (ev) => {
+      console.warn("[onyx voice] speechSynthesis error", (ev as SpeechSynthesisErrorEvent).error);
+      clearSynthKeepalive();
+      onEnd?.();
+    };
+    clearSynthKeepalive();
+    // Chrome bug: after cancel(), synthesis can stay paused and speak() is silent.
+    synth.cancel();
+    resumeSpeechSynthesis();
+    synth.speak(u);
+    resumeSpeechSynthesis();
+    synthKeepalive = setInterval(() => {
+      if (synth.speaking || synth.pending) {
+        resumeSpeechSynthesis();
+      }
+    }, 5000);
   };
 
-  const voices = window.speechSynthesis.getVoices();
+  const voices = synth.getVoices();
   if (!voices.length) {
-    window.speechSynthesis.onvoiceschanged = () => {
-      window.speechSynthesis.onvoiceschanged = null;
+    let started = false;
+    const startOnce = () => {
+      if (started) return;
+      started = true;
+      synth.removeEventListener("voiceschanged", startOnce);
       speakNow();
     };
-    window.setTimeout(speakNow, 250);
+    synth.addEventListener("voiceschanged", startOnce);
+    window.setTimeout(startOnce, 250);
     return;
   }
   speakNow();
@@ -125,11 +193,18 @@ function speakBrowser(clean: string, onEnd?: () => void): void {
 async function playAudioBlob(blob: Blob, generation: number): Promise<void> {
   const url = URL.createObjectURL(blob);
   const audio = new Audio(url);
+  audio.volume = 1;
   currentAudio = audio;
   await new Promise<void>((resolve, reject) => {
     audio.onended = () => resolve();
-    audio.onerror = () => reject(new Error("audio playback failed"));
-    void audio.play().catch(reject);
+    audio.onerror = () => {
+      console.warn("[onyx voice] audio element error");
+      reject(new Error("audio playback failed"));
+    };
+    void audio.play().catch((err: unknown) => {
+      console.warn("[onyx voice] audio.play() failed", err);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    });
   }).finally(() => {
     URL.revokeObjectURL(url);
     if (speakGeneration === generation && currentAudio === audio) {
@@ -156,6 +231,11 @@ async function speakTextAsync(
   const clean = stripMarkdownForSpeech(text).slice(0, 520);
   if (!clean) return;
 
+  if (!audioUnlocked) {
+    // Best-effort; full unlock still needs a user gesture.
+    resumeSpeechSynthesis();
+  }
+
   stopPlayback();
   const generation = speakGeneration;
   opts?.onStart?.();
@@ -172,7 +252,8 @@ async function speakTextAsync(
       await playAudioBlob(blob, generation);
       finish();
       return;
-    } catch {
+    } catch (err) {
+      console.warn("[onyx voice] ElevenLabs/audio failed — falling back to browser TTS", err);
       if (generation !== speakGeneration) return;
     }
   }
@@ -182,12 +263,20 @@ async function speakTextAsync(
 }
 
 export async function playVoicePreview(): Promise<void> {
+  unlockAudio();
   const config = voiceConfig ?? (await loadVoiceConfig());
   stopPlayback();
   const generation = speakGeneration;
   const audio = new Audio(config.preview_url);
+  audio.volume = 1;
   currentAudio = audio;
-  await audio.play().catch(() => undefined);
+  try {
+    await audio.play();
+  } catch (err) {
+    console.warn("[onyx voice] preview play failed", err);
+    currentAudio = null;
+    return;
+  }
   audio.onended = () => {
     if (speakGeneration === generation) currentAudio = null;
   };
