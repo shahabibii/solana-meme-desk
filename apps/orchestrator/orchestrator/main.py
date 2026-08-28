@@ -489,6 +489,14 @@ async def sync_fomo_profile(body: FomoSyncBody) -> dict[str, Any]:
     sync = await _desk.cope.sync_fomo(handle)
     follows = await _desk.cope.follows()
     wallets = await _desk.refresh_copy_wallets()
+    cope_health = await _desk.cope.health()
+    if not follows and not wallets:
+        err = (
+            _desk.cope.last_error
+            or cope_health.get("error")
+            or "Cope API returned no follows — api.cope.capital may be down"
+        )
+        sync = {**(sync if isinstance(sync, dict) else {}), "ok": False, "error": err}
     return {
         "fomo_handle": handle,
         "sync": sync,
@@ -496,6 +504,7 @@ async def sync_fomo_profile(body: FomoSyncBody) -> dict[str, Any]:
         "follow_count": len(follows),
         "wallets": wallets,
         "wallet_count": len(wallets),
+        "cope_health": cope_health,
     }
 
 

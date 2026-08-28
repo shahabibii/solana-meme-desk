@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from typing import Any
 
 import httpx
 
 from orchestrator.models import MintCandidate
+
+logger = logging.getLogger(__name__)
 
 # Solana base58 pubkeys are typically 32–44 chars.
 _WALLET_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
@@ -67,56 +71,99 @@ def _as_list(data: Any, *keys: str) -> list[Any]:
 
 
 class CopeClient:
-    BASE = "https://api.cope.capital/v1"
+    BASE = os.environ.get("COPE_API_BASE", "https://api.cope.capital/v1")
 
     def __init__(self, api_key: str | None = None) -> None:
         self._key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._handles: list[str] = []
+        self.last_error: str | None = None
 
     @property
     def enabled(self) -> bool:
         return bool(self._key)
 
+    def _fail(self, detail: str) -> None:
+        self.last_error = detail
+        logger.warning("cope: %s", detail)
+
     async def _get_json(self, path: str, *, params: dict[str, Any] | None = None) -> Any:
         if not self.enabled:
+            self._fail("COPE_API_KEY not configured")
             return None
+        url = f"{self.BASE}{path}"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(
-                    f"{self.BASE}{path}",
-                    headers=self._headers,
-                    params=params or {},
-                )
+                r = await client.get(url, headers=self._headers, params=params or {})
                 if r.status_code in (401, 404, 402):
+                    self._fail(f"GET {path} -> HTTP {r.status_code}")
                     return None
                 r.raise_for_status()
+                self.last_error = None
                 return r.json()
-        except Exception:
+        except httpx.ConnectError as exc:
+            self._fail(f"GET {path} connect error: {exc}")
+            return None
+        except httpx.HTTPStatusError as exc:
+            self._fail(f"GET {path} -> HTTP {exc.response.status_code}")
+            return None
+        except Exception as exc:
+            self._fail(f"GET {path} failed: {exc}")
             return None
 
     async def _post_json(self, path: str, body: dict[str, Any]) -> Any:
         if not self.enabled:
+            self._fail("COPE_API_KEY not configured")
             return None
+        url = f"{self.BASE}{path}"
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                r = await client.post(
-                    f"{self.BASE}{path}",
-                    headers=self._headers,
-                    json=body,
-                )
+                r = await client.post(url, headers=self._headers, json=body)
                 if r.status_code in (401, 404, 402):
+                    self._fail(f"POST {path} -> HTTP {r.status_code}")
                     return None
                 r.raise_for_status()
+                self.last_error = None
                 return r.json()
-        except Exception:
+        except httpx.ConnectError as exc:
+            self._fail(f"POST {path} connect error: {exc}")
             return None
+        except httpx.HTTPStatusError as exc:
+            self._fail(f"POST {path} -> HTTP {exc.response.status_code}")
+            return None
+        except Exception as exc:
+            self._fail(f"POST {path} failed: {exc}")
+            return None
+
+    async def health(self) -> dict[str, Any]:
+        """Light probe — used by status/setup to explain empty fomo sync."""
+        if not self.enabled:
+            return {"reachable": False, "error": "COPE_API_KEY not configured"}
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                r = await client.get(f"{self.BASE}/account/follows", headers=self._headers)
+                return {
+                    "reachable": True,
+                    "status_code": r.status_code,
+                    "base": self.BASE,
+                }
+        except httpx.ConnectError as exc:
+            return {
+                "reachable": False,
+                "error": f"Cannot reach {self.BASE}: {exc}",
+                "base": self.BASE,
+            }
+        except Exception as exc:
+            return {"reachable": False, "error": str(exc), "base": self.BASE}
 
     async def sync_fomo(self, fomo_handle: str) -> dict[str, Any]:
         """Import follows from a fomo.family profile into the Cope account."""
         handle = fomo_handle.strip().lstrip("@")
         data = await self._post_json("/account/sync-fomo", {"fomo_handle": handle})
-        return data if isinstance(data, dict) else {"ok": data is not None, "handle": handle}
+        if isinstance(data, dict):
+            return data
+        err = self.last_error or "sync-fomo returned no data"
+        return {"ok": False, "handle": handle, "error": err}
 
     async def follows(self) -> list[str]:
         """Handles you follow on fomo.family (after sync-fomo)."""

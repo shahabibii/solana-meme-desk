@@ -144,6 +144,8 @@ class DeskRuntime:
             "wallets": len(wallets),
             "seeded_candidates": seeded,
             "fomo_copy_mode": self.feed_cfg.fomo_copy_mode,
+            "follows": handles,
+            "cope_error": self.cope.last_error,
         }
 
     def status_extra(self) -> dict:
@@ -157,6 +159,7 @@ class DeskRuntime:
                 "pumpportal_required": bool(self.settings.pumpportal_api_key),
                 "fomo_handle": self.settings.fomo_handle,
                 "fomo_handles": list(self.cope._handles)[:20],
+                "cope_error": self.cope.last_error,
             },
             "daily_loss_sol": {
                 "paper": round(self.risk.daily_realized_loss_sol("paper"), 4),

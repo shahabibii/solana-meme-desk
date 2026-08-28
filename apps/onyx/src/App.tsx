@@ -467,8 +467,17 @@ export default function App() {
         try {
           const r = await bootstrapFomoCopy();
           desk.applyStatus(await fetchStatus());
+          const err =
+            (r.cope_error as string | undefined) ||
+            ((r.sync as { error?: string } | undefined)?.error);
+          if (err) {
+            notify(
+              `Fomo sync failed: ${err}. Cope API (api.cope.capital) is the bridge to fomo — try again later or paste wallets manually.`
+            );
+            return;
+          }
           notify(
-            `Fomo sync: ${Number(r.wallets ?? 0)} wallets, ${Number(r.seeded_candidates ?? 0)} candidates seeded`
+            `Fomo sync: ${Number(r.handles ?? r.wallets ?? 0)} follows, ${Number(r.wallets ?? 0)} wallets, ${Number(r.seeded_candidates ?? 0)} candidates`
           );
         } catch (e) {
           notify(e instanceof Error ? e.message : "Fomo sync failed");
