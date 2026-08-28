@@ -16,8 +16,9 @@ from orchestrator.models import MintCandidate
 log = logging.getLogger(__name__)
 HELIUS_API = "https://api.helius.xyz/v0/webhooks"
 
-# Helius types we mirror for watched wallets (SWAP-only misses Pump transfers & many Jupiter routes).
-HELIUS_WALLET_TX_TYPES = ["SWAP", "BUY", "SELL", "TRANSFER"]
+# Helius webhook filter (API-valid types). Parser also accepts BUY/SELL if present in payload.
+HELIUS_WEBHOOK_TX_TYPES = ["SWAP", "TRANSFER"]
+HELIUS_WALLET_TX_TYPES = frozenset({"SWAP", "BUY", "SELL", "TRANSFER"})
 
 PUMP_VENUES = frozenset(
     {
@@ -350,7 +351,7 @@ async def sync_wallet_webhook(
     payload = {
         "webhookURL": webhook_url,
         "webhookType": "enhanced",
-        "transactionTypes": list(HELIUS_WALLET_TX_TYPES),
+        "transactionTypes": list(HELIUS_WEBHOOK_TX_TYPES),
         "accountAddresses": cleaned,
         "authHeader": auth_header,
     }
@@ -372,10 +373,13 @@ async def sync_wallet_webhook(
                 webhook_id = wh.get("webhookID") or wh.get("webhookId") or wh.get("id")
                 if webhook_id:
                     resp = await client.put(f"{HELIUS_API}/{webhook_id}?api-key={api_key}", json=payload)
-                    resp.raise_for_status()
-                    stored.update({"webhook_id": webhook_id, "wallets": len(cleaned), "webhookURL": webhook_url})
-                    state_path.write_text(json.dumps(stored, indent=2))
-                    return {"ok": True, "action": "updated", "webhook_id": webhook_id, "wallets": len(cleaned)}
+                    if resp.status_code in (200, 204):
+                        stored.update({"webhook_id": webhook_id, "wallets": len(cleaned), "webhookURL": webhook_url})
+                        state_path.write_text(json.dumps(stored, indent=2))
+                        return {"ok": True, "action": "updated", "webhook_id": webhook_id, "wallets": len(cleaned)}
+                    detail = resp.text[:240]
+                    log.warning("helius webhook update failed: %s", detail)
+                    return {"ok": False, "reason": detail}
 
         resp = await client.post(base, json=payload)
         if resp.status_code not in (200, 201):
