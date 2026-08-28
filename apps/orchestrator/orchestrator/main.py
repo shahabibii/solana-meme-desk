@@ -485,6 +485,16 @@ async def fomo_bootstrap_desk() -> dict[str, Any]:
     return result
 
 
+@app.post("/api/desk/reconcile-positions")
+async def reconcile_positions() -> dict[str, Any]:
+    """Import on-chain SPL holdings into live TP/SL monitor."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    result = await _desk.reconcile_live_positions()
+    await _broadcast(status_snapshot(await _desk_status()))
+    return result
+
+
 @app.post("/api/copy/refresh")
 async def refresh_copy_wallets() -> dict[str, Any]:
     if not _desk:

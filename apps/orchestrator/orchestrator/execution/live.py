@@ -12,6 +12,7 @@ from solders.transaction import VersionedTransaction
 
 from orchestrator.config import Settings
 from orchestrator.execution.jupiter import SOL_MINT, get_token_balance_raw, jupiter_quote, jupiter_swap
+from orchestrator.execution.wallet_tokens import burn_and_close_token_account, list_wallet_tokens
 from orchestrator.feeds.helius_wallets import is_pump_venue
 
 log = logging.getLogger(__name__)
@@ -137,6 +138,57 @@ class LiveExecutor:
         out = await self.jupiter_sell(mint, fraction)
         out["venue_exec"] = "jupiter"
         return out
+
+    async def dispose_dead_bag(self, mint: str) -> dict[str, Any]:
+        """Try to sell; if no route, burn balance and close token account for rent."""
+        errors: list[str] = []
+        for attempt in (
+            lambda: self.sell(mint, 1.0),
+            lambda: self.jupiter_sell(mint, 1.0),
+        ):
+            try:
+                out = await attempt()
+                out["disposal"] = "sold"
+                return out
+            except Exception as exc:
+                errors.append(str(exc))
+
+        if not self.ready or not self._keypair or not self.public_key:
+            raise RuntimeError("Live wallet not ready")
+
+        tokens = await list_wallet_tokens(self._settings.effective_rpc_url, self.public_key)
+        target = next((t for t in tokens if t.mint == mint), None)
+        if not target:
+            return {"status": "gone", "mint": mint, "disposal": "not_found"}
+
+        quote = await jupiter_quote(
+            input_mint=mint,
+            output_mint=SOL_MINT,
+            amount_raw=target.amount_raw,
+            slippage_bps=int(self._settings.trade_slippage_pct * 100),
+        )
+        if quote:
+            try:
+                out = await self.jupiter_sell(mint, 1.0)
+                out["disposal"] = "sold_late"
+                return out
+            except Exception as exc:
+                errors.append(str(exc))
+
+        sig = await burn_and_close_token_account(
+            rpc_url=self._settings.effective_rpc_url,
+            keypair=self._keypair,
+            token_account=target.account,
+            mint=mint,
+            amount_raw=target.amount_raw,
+        )
+        return {
+            "status": "submitted",
+            "signature": sig,
+            "mint": mint,
+            "disposal": "burn_close",
+            "errors": errors[:3],
+        }
 
     async def jupiter_sell(self, mint: str, fraction: float = 1.0) -> dict[str, Any]:
         if not self.ready or not self._keypair or not self.public_key:

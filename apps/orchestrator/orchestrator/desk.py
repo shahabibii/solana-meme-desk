@@ -27,6 +27,8 @@ from orchestrator.config_loaders import (
     load_fomo_wallets_by_handle,
 )
 from orchestrator.execution.live import LiveExecutor
+from orchestrator.execution.wallet_tokens import estimate_entry_sol_for_mint, list_wallet_tokens
+from orchestrator.live_positions import LivePositionStore
 from orchestrator.execution.paper import PaperBook, RiskLimits
 from orchestrator.feeds.copy_trades import account_trade_listener
 from orchestrator.feeds.cope import CopeClient
@@ -84,7 +86,8 @@ class DeskRuntime:
             imp, watched_wallets=set(copy_cfg.wallets)
         )
         self._min_score = feed_cfg.entry_min_score_default or settings.entry_min_score
-        self._live_tracks: dict[str, dict] = {}
+        self._position_store = LivePositionStore(settings.data_dir / "live_positions.json")
+        self._live_tracks: dict[str, dict] = self._position_store.load()
         self._copy_wallets: list[str] = list(copy_cfg.wallets)
         self._last_copy_refresh = 0.0
         self._copy_signals_seen = 0
@@ -97,6 +100,86 @@ class DeskRuntime:
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
+
+    def _save_live_tracks(self) -> None:
+        try:
+            self._position_store.save(self._live_tracks)
+        except Exception as exc:
+            log.warning("live position persist failed: %s", exc)
+
+    async def reconcile_live_positions(self, *, dispose_mints: list[str] | None = None) -> dict:
+        """Import on-chain SPL holdings into the live tracker (TP/SL monitor)."""
+        if not self.live.ready or not self.live.public_key:
+            return {"imported": 0, "tracked": len(self._live_tracks), "reason": "live_not_ready"}
+
+        rpc = self.settings.effective_rpc_url
+        owner = self.live.public_key
+        dispose_set = set(dispose_mints or [])
+        imported = 0
+        disposed: list[dict] = []
+
+        for token in await list_wallet_tokens(rpc, owner):
+            if token.mint in dispose_set:
+                try:
+                    result = await self.live.dispose_dead_bag(token.mint)
+                    disposed.append({"mint": token.mint, **result})
+                    self._live_tracks.pop(token.mint, None)
+                except Exception as exc:
+                    disposed.append({"mint": token.mint, "error": str(exc)[:160]})
+                continue
+
+            if token.mint in self._live_tracks:
+                continue
+
+            entry_sol, entry_ts = await estimate_entry_sol_for_mint(rpc, owner, token.mint)
+            price, _ = await mark_price_usd(token.mint)
+            symbol = token.mint[:6].upper()
+            if price:
+                try:
+                    import httpx
+
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        resp = await client.get(
+                            f"https://api.dexscreener.com/latest/dex/tokens/{token.mint}"
+                        )
+                        pairs = (resp.json().get("pairs") or []) if resp.status_code == 200 else []
+                        if pairs:
+                            symbol = str(
+                                (pairs[0].get("baseToken") or {}).get("symbol") or symbol
+                            )[:12]
+                except Exception:
+                    pass
+
+            self._live_tracks[token.mint] = {
+                "symbol": symbol,
+                "entry_sol": round(entry_sol, 4),
+                "entry_ts": entry_ts or datetime.now(timezone.utc),
+                "source": "import",
+                "venue": "jupiter",
+                "peak_pnl_pct": 0.0,
+                "entry_price": price or 0.0001,
+                "tp_hit": set(),
+            }
+            imported += 1
+            log.info(
+                "imported live position %s (%s) entry_sol=%.4f",
+                symbol,
+                token.mint[:12],
+                entry_sol,
+            )
+
+        self._save_live_tracks()
+        return {
+            "imported": imported,
+            "tracked": len(self._live_tracks),
+            "disposed": disposed,
+        }
+
+    async def dispose_dead_bag(self, mint: str) -> dict:
+        result = await self.live.dispose_dead_bag(mint)
+        self._live_tracks.pop(mint, None)
+        self._save_live_tracks()
+        return result
 
     async def enqueue(self, candidate: MintCandidate) -> None:
         if self.feed_cfg.fomo_copy_mode and candidate.source not in self.feed_cfg.allowed_sources:
@@ -365,6 +448,7 @@ class DeskRuntime:
                     self._mirror_sell_seen.discard(f"{mint}:{trader}")
                 else:
                     track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
+                self._save_live_tracks()
                 if self._on_alert:
                     await self._on_alert(
                         f"Mirror sell {symbol} · {fraction:.0%} · {sell_count} wallet(s) exiting"
@@ -708,6 +792,7 @@ class DeskRuntime:
                         "entry_price": price or 0.0001,
                         "tp_hit": set(),
                     }
+                    self._save_live_tracks()
                     await self.broadcast(ev.trade_fill("buy", mint, sol, "live"))
                     if self._on_alert:
                         await self._on_alert(
@@ -863,6 +948,7 @@ class DeskRuntime:
                     self._live_tracks.pop(mint, None)
                 else:
                     track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
+                self._save_live_tracks()
                 await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.LIVE)}))
             except Exception:
                 pass
@@ -946,6 +1032,18 @@ async def start_desk(
             pass
     if feed_cfg.fomo_copy_mode:
         await desk.bootstrap_fomo_copy()
+
+    if live.ready:
+        dead_mint = "8qCQkHdXFusQTv1YUfxcq5xULArdsgoZXMZq4XvRpump"
+        try:
+            summary = await desk.reconcile_live_positions(dispose_mints=[dead_mint])
+            log.info("live position reconcile: %s", summary)
+            if desk._on_alert and summary.get("imported"):
+                await desk._on_alert(
+                    f"Re-imported {summary['imported']} live position(s) — TP/SL active"
+                )
+        except Exception as exc:
+            log.warning("live position reconcile failed: %s", exc)
 
     async def _fomo_relay_backfill() -> None:
         import logging

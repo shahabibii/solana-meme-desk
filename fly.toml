@@ -24,7 +24,7 @@ primary_region = "iad"
 
 [processes]
   web = "uvicorn orchestrator.main:app --host 0.0.0.0 --port 8787"
-  sniper = "/app/run-sniper-rs.sh"
+  # sniper = "/app/run-sniper-rs.sh"  # scale to 0 — volume mounts on web only
 
 [http_service]
   internal_port = 8787
