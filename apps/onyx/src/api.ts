@@ -83,6 +83,30 @@ export async function refreshCopyWallets(): Promise<{ count: number; wallets: st
   return r.json();
 }
 
+export async function bootstrapFomoCopy(): Promise<Record<string, unknown>> {
+  const r = await fetch(API.fomoBootstrap, { method: "POST" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function syncFomoProfile(
+  fomoHandle: string
+): Promise<Record<string, unknown>> {
+  const r = await fetch(API.fomoSync, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fomo_handle: fomoHandle }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
 export async function fetchTrades(limit = 20): Promise<{ trades: Record<string, unknown>[] }> {
   const r = await fetch(`${API.trades}?limit=${limit}`);
   return r.json();

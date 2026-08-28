@@ -1,4 +1,4 @@
-"""Load copy-trading configuration."""
+"""Load copy-trading and desk feed configuration."""
 
 from __future__ import annotations
 
@@ -7,6 +7,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+@dataclass
+class DeskFeedConfig:
+    fomo_copy_mode: bool = False
+    pump_launch_feed: bool = True
+    cope_poll_sec: int = 60
+    allowed_sources: frozenset[str] = frozenset({"copy", "convergence", "fomo"})
+    entry_min_score_default: int = 72
+    entry_min_score_by_source: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -50,6 +60,33 @@ def load_copy_config(config_dir: Path, data_dir: Path | None = None) -> CopyConf
             except Exception:
                 pass
     return cfg
+
+
+def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
+    path = config_dir / "desk.yaml"
+    if not path.exists():
+        return DeskFeedConfig()
+    raw = yaml.safe_load(path.read_text()) or {}
+    allowed = raw.get("allowed_sources") or ["copy", "convergence", "fomo"]
+    scores = raw.get("entry_min_score") or {}
+    default_score = int(scores.get("default", raw.get("entry_min_score_default", 72)))
+    by_source = {
+        k: int(v)
+        for k, v in scores.items()
+        if k != "default" and isinstance(v, (int, float))
+    }
+    fomo_mode = bool(raw.get("fomo_copy_mode", False))
+    pump_feed = bool(raw.get("pump_launch_feed", not fomo_mode))
+    if fomo_mode and "pump_launch_feed" not in raw:
+        pump_feed = False
+    return DeskFeedConfig(
+        fomo_copy_mode=fomo_mode,
+        pump_launch_feed=pump_feed,
+        cope_poll_sec=int(raw.get("cope_poll_sec", 60)),
+        allowed_sources=frozenset(str(s) for s in allowed),
+        entry_min_score_default=default_score,
+        entry_min_score_by_source=by_source,
+    )
 
 
 def save_runtime_wallets(data_dir: Path, wallets: list[str]) -> None:

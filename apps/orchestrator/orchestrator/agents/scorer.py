@@ -12,6 +12,7 @@ def score_candidate(
     weights: dict[str, float],
     *,
     min_score: int = 72,
+    min_score_by_source: dict[str, int] | None = None,
 ) -> ScoreResult:
     base = safety.score
     w = weights.get(candidate.source, 1.0)
@@ -19,9 +20,10 @@ def score_candidate(
     reasons: list[str] = [f"source={candidate.source}", f"safety={safety.score}"]
     if candidate.copy_boost:
         reasons.append(f"copy_boost=+{candidate.copy_boost}")
-    trade = safety.passed and score >= min_score
+    threshold = (min_score_by_source or {}).get(candidate.source, min_score)
+    trade = safety.passed and score >= threshold
     if not trade:
-        reasons.append("below_threshold")
+        reasons.append(f"below_{threshold}")
     return ScoreResult(mint=candidate.mint, score=score, trade=trade, reasons=reasons)
 
 

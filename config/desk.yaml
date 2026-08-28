@@ -1,0 +1,18 @@
+# Desk feed strategy — Fomo Copy Mode (smart-money first, no raw pump firehose)
+
+fomo_copy_mode: true
+pump_launch_feed: false
+cope_poll_sec: 20
+
+# Only these sources enter the agent pipeline when fomo_copy_mode is on
+allowed_sources:
+  - copy
+  - convergence
+  - fomo
+
+# Lower bar for copy/convergence signals (pump launches disabled anyway)
+entry_min_score:
+  default: 72
+  copy: 65
+  convergence: 68
+  fomo: 68

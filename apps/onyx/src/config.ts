@@ -14,6 +14,8 @@ export const API = {
   deskStop: "/api/desk/stop",
   deskResume: "/api/desk/resume",
   deskArmLive: "/api/desk/arm-live",
+  fomoBootstrap: "/api/desk/fomo-bootstrap",
+  fomoSync: "/api/fomo/sync",
   copyRefresh: "/api/copy/refresh",
   voice: "/api/voice",
   tts: "/api/tts",

@@ -17,6 +17,7 @@ export default function HeaderBar({
   onLiveRequest,
   onStop,
   onCopyPubkey,
+  fomoCopyMode,
 }: {
   connected: boolean;
   mode: DeskMode;
@@ -28,6 +29,7 @@ export default function HeaderBar({
   onLiveRequest: () => void;
   onStop: () => void;
   onCopyPubkey: () => void;
+  fomoCopyMode?: boolean;
 }) {
   const [clock, setClock] = useState("00:00:00");
   const [dateTxt, setDateTxt] = useState("—");
@@ -74,6 +76,12 @@ export default function HeaderBar({
         <div className="c">{clock}</div>
       </div>
       <div className="sp" />
+      {fomoCopyMode && (
+        <div className="statchip fomo">
+          <span className="dot cy" />
+          FOMO COPY MODE
+        </div>
+      )}
       {paused && (
         <div className="statchip paused">
           <span className="dot warn" />

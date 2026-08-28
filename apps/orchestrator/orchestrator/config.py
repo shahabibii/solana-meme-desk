@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     mock_stream: bool = False
     cope_poll_sec: int = 60
     fomo_handle: str | None = None
+    fomo_copy_mode: bool = False
+    pump_launch_feed: bool = True
 
     # Scoring / paper
     safety_min_score: int = 65

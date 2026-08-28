@@ -12,6 +12,7 @@ import {
   armLiveDesk,
   stopDesk,
   resumeDesk,
+  bootstrapFomoCopy,
 } from "./api";
 import { BLOCK_SPEAK_THROTTLE_MS, POLL_MS } from "./config";
 import { useDesk, type FeedItem } from "./store";
@@ -461,6 +462,21 @@ export default function App() {
       case "resume":
         await resumeTrading();
         return;
+      case "fomo_sync": {
+        setModeBusy(true);
+        try {
+          const r = await bootstrapFomoCopy();
+          desk.applyStatus(await fetchStatus());
+          notify(
+            `Fomo sync: ${Number(r.wallets ?? 0)} wallets, ${Number(r.seeded_candidates ?? 0)} candidates seeded`
+          );
+        } catch (e) {
+          notify(e instanceof Error ? e.message : "Fomo sync failed");
+        } finally {
+          setModeBusy(false);
+        }
+        return;
+      }
       default:
         void handleChat(cmd);
     }
@@ -486,9 +502,13 @@ export default function App() {
     return null;
   }, [stats]);
 
-  const coreLabel = desk.busyAgent
-    ? `ACTIVE · EVALUATING ${desk.busyAgent.toUpperCase()}`
-    : "ACTIVE · SCANNING";
+  const coreLabel = desk.fomoCopyMode
+    ? desk.busyAgent
+      ? `FOMO COPY · ${desk.busyAgent.toUpperCase()}`
+      : "FOMO COPY · SCANNING SMART MONEY"
+    : desk.busyAgent
+      ? `ACTIVE · EVALUATING ${desk.busyAgent.toUpperCase()}`
+      : "ACTIVE · SCANNING";
 
   const copyPubkey = () => {
     if (desk.walletPubkey) {
@@ -520,6 +540,8 @@ export default function App() {
           onListen={toggleListen}
           onCommand={(c) => void runCommand(c)}
           onCopyPubkey={copyPubkey}
+          fomoCopyMode={desk.fomoCopyMode}
+          copyWalletCount={desk.copyWalletCount}
         />
 
         <HeaderBar
@@ -533,6 +555,7 @@ export default function App() {
           onLiveRequest={() => void armLiveAndRun()}
           onStop={() => void stopTrading()}
           onCopyPubkey={copyPubkey}
+          fomoCopyMode={desk.fomoCopyMode}
         />
 
         <div className="main" style={{ ["--i" as string]: 0 }}>

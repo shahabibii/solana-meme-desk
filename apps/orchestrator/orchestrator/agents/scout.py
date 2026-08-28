@@ -16,11 +16,22 @@ SOURCE_PRIORITY = {
 MIN_COPY_TRADER_SOL = 0.02
 
 
-def scout_evaluate(candidate: MintCandidate, *, min_copy_trader_sol: float = MIN_COPY_TRADER_SOL) -> tuple[str, str | None]:
+def scout_evaluate(
+    candidate: MintCandidate,
+    *,
+    min_copy_trader_sol: float = MIN_COPY_TRADER_SOL,
+    fomo_copy_mode: bool = False,
+    allowed_sources: frozenset[str] | None = None,
+) -> tuple[str, str | None]:
     """
     Returns (verdict, detail).
     PASS — proceed. SKIP — drop before safety (saves RPC).
     """
+    if fomo_copy_mode:
+        allowed = allowed_sources or frozenset({"copy", "convergence", "fomo"})
+        if candidate.source not in allowed:
+            return "SKIP", f"fomo_copy_only:{candidate.source}"
+
     if candidate.source == "copy":
         trader_sol = candidate.meta.get("trader_sol")
         if trader_sol is not None and float(trader_sol) < min_copy_trader_sol:

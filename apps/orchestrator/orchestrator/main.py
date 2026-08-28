@@ -17,6 +17,7 @@ from orchestrator.alerts import send_alert
 from orchestrator.desk_controls import DeskControls
 from orchestrator.agents.scorer import run_learner
 from orchestrator.config import DeskMode, settings
+from orchestrator.config_loaders import load_desk_feed_config
 from orchestrator.desk import DeskRuntime, load_risk_limits, start_desk
 from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook
@@ -29,7 +30,12 @@ journal = JournalStore(settings.data_dir / "desk.db")
 paper_book = PaperBook.new(settings.paper_starting_sol, load_risk_limits(settings.config_dir))
 live_exec = LiveExecutor(settings)
 _controls = DeskControls(settings.data_dir, default_mode=settings.desk_mode.value)
-_desk_mode = DeskMode(_controls.initial_mode(live_exec.ready))
+_feed_cfg_boot = load_desk_feed_config(settings.config_dir)
+if _feed_cfg_boot.fomo_copy_mode or settings.fomo_copy_mode:
+    _controls.set_mode("paper")
+    _desk_mode = DeskMode.PAPER
+else:
+    _desk_mode = DeskMode(_controls.initial_mode(live_exec.ready))
 _ws_clients: set[WebSocket] = set()
 _tasks: list[asyncio.Task] = []
 _running = True
@@ -61,7 +67,10 @@ def get_mode() -> DeskMode:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _tasks, _running, _desk
+    global _tasks, _running, _desk, _desk_mode
+    if _feed_cfg_boot.fomo_copy_mode or settings.fomo_copy_mode:
+        _desk_mode = DeskMode.PAPER
+        _controls.set_mode("paper")
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     journal.record_equity(paper_book.equity_sol)
     _desk, _tasks = await start_desk(
@@ -134,9 +143,14 @@ class FomoSyncBody(BaseModel):
 
 def _setup_checklist() -> dict[str, Any]:
     flags = settings.integration_flags()
+    fomo_copy = bool(
+        _desk and _desk.feed_cfg.fomo_copy_mode
+    ) or _feed_cfg_boot.fomo_copy_mode or settings.fomo_copy_mode
     missing = []
     if not flags["pumpportal_key"]:
         missing.append("PUMPPORTAL_API_KEY — required for wallet copy-trading stream")
+    if fomo_copy and not flags["cope_fomo"]:
+        missing.append("COPE_API_KEY — required for Fomo Copy Mode signals")
     if not flags["elevenlabs_tts"]:
         missing.append("ELEVENLABS_API_KEY — optional Maisie voice")
     if not flags["research_llm"]:
@@ -146,11 +160,15 @@ def _setup_checklist() -> dict[str, Any]:
             "ALERT_WEBHOOK_URL — optional Slack/Discord alerts on fills/loss cap"
         )
     wallets = len(_desk._copy_wallets) if _desk else 0
-    if wallets == 0 and not flags["pumpportal_key"]:
-        missing.append("copy_wallets.yaml or Cope top-trader poll — no mirror wallets yet")
+    if wallets == 0:
+        if fomo_copy:
+            missing.append("Fomo sync — POST /api/desk/fomo-bootstrap or /api/fomo/sync")
+        elif not flags["pumpportal_key"]:
+            missing.append("copy_wallets.yaml or Cope top-trader poll — no mirror wallets yet")
     return {
+        "fomo_copy_mode": fomo_copy,
         "ready_for_copy_trading": flags["pumpportal_key"] and wallets > 0,
-        "ready_for_live": live_exec.ready,
+        "ready_for_live": live_exec.ready and not fomo_copy,
         "paused": _controls.paused,
         "copy_wallets": wallets,
         "missing": missing,
@@ -209,7 +227,11 @@ def _desk_status_sync() -> dict[str, Any]:
         "mode": _desk_mode.value,
         "live_ready": live_exec.ready,
         "mock_stream": settings.mock_stream,
-        "pumpportal": True,
+        "pumpportal": bool(_desk.feed_cfg.pump_launch_feed) if _desk else True,
+        "pump_launch_feed": _desk.feed_cfg.pump_launch_feed if _desk else True,
+        "fomo_copy_mode": (
+            _desk.feed_cfg.fomo_copy_mode if _desk else _feed_cfg_boot.fomo_copy_mode
+        ),
         "agents": [
             "scout",
             "safety",
@@ -371,6 +393,11 @@ async def resume_desk() -> dict[str, Any]:
 async def arm_live_desk(body: ArmLiveBody) -> dict[str, Any]:
     """Arm LIVE, unpause, and persist — safe to close the browser after this."""
     global _desk_mode
+    if _desk and _desk.feed_cfg.fomo_copy_mode:
+        raise HTTPException(
+            400,
+            detail="Fomo Copy Mode is paper-only — set fomo_copy_mode=false to arm LIVE",
+        )
     if not body.confirm:
         raise HTTPException(400, detail="Arm LIVE requires confirm=true")
     if not live_exec.ready:
@@ -401,6 +428,16 @@ async def arm_live_desk(body: ArmLiveBody) -> dict[str, Any]:
         "live_ready": live_exec.ready,
         "message": msg,
     }
+
+
+@app.post("/api/desk/fomo-bootstrap")
+async def fomo_bootstrap_desk() -> dict[str, Any]:
+    """Sync fomo follows, resolve wallets, and seed Cope candidates."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    result = await _desk.bootstrap_fomo_copy()
+    await _broadcast(status_snapshot(await _desk_status()))
+    return result
 
 
 @app.post("/api/copy/refresh")
@@ -514,10 +551,12 @@ async def chat(body: ChatBody) -> dict[str, str]:
         return {"reply": "Paper mode simulates bonding-curve fills with full safety and journal."}
     if "block" in lower:
         return {"reply": f"Safety blocks so far: {st['stats']['blocks']}."}
-    if "copy" in lower:
+    if "copy" in lower or "fomo" in lower:
         ct = st.get("copy_trading") or {}
+        fomo = "ON" if st.get("fomo_copy_mode") else "off"
         return {
             "reply": (
+                f"Fomo Copy Mode {fomo}. "
                 f"Copy-trading {'on' if ct.get('enabled') else 'off'}. "
                 f"Watching {ct.get('wallets', 0)} wallets."
             )
@@ -548,6 +587,11 @@ def get_desk_mode() -> dict[str, Any]:
 async def set_desk_mode(body: ModeBody) -> dict[str, Any]:
     global _desk_mode
     if body.mode == DeskMode.LIVE:
+        if _desk and _desk.feed_cfg.fomo_copy_mode:
+            raise HTTPException(
+                400,
+                detail="Fomo Copy Mode is paper-only — set fomo_copy_mode=false first",
+            )
         if not body.confirm:
             raise HTTPException(400, detail="Switching to LIVE requires confirm=true")
         if not live_exec.ready:

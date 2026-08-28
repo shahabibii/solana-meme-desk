@@ -8,6 +8,9 @@ primary_region = "iad"
 
 [env]
   DESK_MODE = "paper"
+  FOMO_COPY_MODE = "true"
+  PUMP_LAUNCH_FEED = "false"
+  COPE_POLL_SEC = "20"
   PORT = "8787"
   DATA_DIR = "/data"
   CONFIG_DIR = "/config"

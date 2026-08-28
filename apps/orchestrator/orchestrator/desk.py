@@ -14,7 +14,7 @@ from orchestrator.agents.safety import run_safety
 from orchestrator.agents.scorer import run_learner, score_candidate
 from orchestrator.agents.scout import scout_evaluate
 from orchestrator.config import DeskMode, Settings
-from orchestrator.config_loaders import CopyConfig, load_copy_config
+from orchestrator.config_loaders import CopyConfig, DeskFeedConfig, load_copy_config, load_desk_feed_config
 from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook, RiskLimits
 from orchestrator.feeds.copy_trades import account_trade_listener
@@ -43,6 +43,7 @@ class DeskRuntime:
         broadcast: Broadcast,
         risk: RiskManager,
         copy_cfg: CopyConfig,
+        feed_cfg: DeskFeedConfig,
         get_paused: Callable[[], bool] | None = None,
         on_alert: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
@@ -53,11 +54,12 @@ class DeskRuntime:
         self.broadcast = broadcast
         self.risk = risk
         self.copy_cfg = copy_cfg
+        self.feed_cfg = feed_cfg
         self.cope = CopeClient(settings.cope_api_key)
         self._queue: asyncio.Queue[MintCandidate] = asyncio.Queue(maxsize=200)
         self._seen: set[str] = set()
         self._processing: set[str] = set()
-        self._min_score = settings.entry_min_score
+        self._min_score = feed_cfg.entry_min_score_default or settings.entry_min_score
         self._live_tracks: dict[str, dict] = {}
         self._copy_wallets: list[str] = list(copy_cfg.wallets)
         self._last_copy_refresh = 0.0
@@ -66,6 +68,8 @@ class DeskRuntime:
         self._on_alert = on_alert
 
     async def enqueue(self, candidate: MintCandidate) -> None:
+        if self.feed_cfg.fomo_copy_mode and candidate.source not in self.feed_cfg.allowed_sources:
+            return
         if candidate.mint in self._seen or candidate.mint in self._processing:
             return
         self._seen.add(candidate.mint)
@@ -107,16 +111,46 @@ class DeskRuntime:
         if self.cope.enabled:
             if self.settings.fomo_handle:
                 await self.cope.sync_fomo(self.settings.fomo_handle)
-            traders = await self.cope.top_traders(limit=self.copy_cfg.max_wallets)
-            for w in traders:
+            handles = await self.cope.resolve_handles()
+            if handles:
+                self.cope._handles = handles
+            for w in await self.cope.wallets_for_handles(handles or self.cope._handles):
+                if w not in wallets:
+                    wallets.append(w)
+            for w in await self.cope.top_traders(limit=self.copy_cfg.max_wallets):
                 if w not in wallets:
                     wallets.append(w)
         self._copy_wallets = wallets[: self.copy_cfg.max_wallets]
         self._last_copy_refresh = time.time()
         return self._copy_wallets
 
+    async def bootstrap_fomo_copy(self) -> dict:
+        """Sync fomo follows, resolve wallets, seed the pipeline from Cope."""
+        if not self.cope.enabled:
+            return {"ok": False, "reason": "COPE_API_KEY not configured"}
+        handle = self.settings.fomo_handle
+        if handle:
+            await self.cope.sync_fomo(handle)
+        handles = await self.cope.resolve_handles()
+        wallets = await self.refresh_copy_wallets()
+        seeded = 0
+        for c in await self.cope.poll_candidates():
+            await self.enqueue(c)
+            seeded += 1
+        return {
+            "ok": True,
+            "fomo_handle": handle,
+            "handles": len(handles),
+            "wallets": len(wallets),
+            "seeded_candidates": seeded,
+            "fomo_copy_mode": self.feed_cfg.fomo_copy_mode,
+        }
+
     def status_extra(self) -> dict:
         base = {
+            "fomo_copy_mode": self.feed_cfg.fomo_copy_mode,
+            "pump_launch_feed": self.feed_cfg.pump_launch_feed,
+            "allowed_sources": sorted(self.feed_cfg.allowed_sources),
             "copy_trading": {
                 "enabled": self.copy_cfg.enabled,
                 "wallets": len(self._copy_wallets),
@@ -132,17 +166,19 @@ class DeskRuntime:
         return base
 
     async def copy_wallet_poller(self, running: Callable[[], bool]) -> None:
+        interval = 120 if self.feed_cfg.fomo_copy_mode else 300
         while running():
             if self.copy_cfg.enabled:
                 await self.refresh_copy_wallets()
-            await asyncio.sleep(300)
+            await asyncio.sleep(interval)
 
     async def cope_poller(self, running: Callable[[], bool]) -> None:
+        poll_sec = self.feed_cfg.cope_poll_sec or self.settings.cope_poll_sec
         while running():
             if self.cope.enabled:
                 for c in await self.cope.poll_candidates():
                     await self.enqueue(c)
-            await asyncio.sleep(self.settings.cope_poll_sec)
+            await asyncio.sleep(poll_sec)
 
     async def pipeline_worker(self, get_mode: Callable[[], DeskMode], running: Callable[[], bool]) -> None:
         while running():
@@ -188,7 +224,10 @@ class DeskRuntime:
 
         t0 = time.perf_counter()
         scout_verdict, scout_detail = scout_evaluate(
-            candidate, min_copy_trader_sol=self.copy_cfg.min_trader_sol
+            candidate,
+            min_copy_trader_sol=self.copy_cfg.min_trader_sol,
+            fomo_copy_mode=self.feed_cfg.fomo_copy_mode,
+            allowed_sources=self.feed_cfg.allowed_sources,
         )
         await self._agent_step(
             "scout",
@@ -229,7 +268,13 @@ class DeskRuntime:
         await self._agent_step("research", mint, research.verdict, research.ms, research.detail)
 
         weights = self.journal.get_weights()
-        scored = score_candidate(candidate, report, weights, min_score=self._min_score)
+        scored = score_candidate(
+            candidate,
+            report,
+            weights,
+            min_score=self._min_score,
+            min_score_by_source=self.feed_cfg.entry_min_score_by_source,
+        )
         await self._agent_step(
             "scorer",
             mint,
@@ -504,6 +549,12 @@ async def start_desk(
     paper.limits = full.paper
     risk = RiskManager(full, journal)
     copy_cfg = load_copy_config(settings.config_dir, settings.data_dir)
+    feed_cfg = load_desk_feed_config(settings.config_dir)
+    if settings.fomo_copy_mode:
+        feed_cfg.fomo_copy_mode = True
+        feed_cfg.pump_launch_feed = settings.pump_launch_feed
+    if settings.cope_poll_sec != 60:
+        feed_cfg.cope_poll_sec = settings.cope_poll_sec
     # Restore persisted fomo handle from volume
     handle_file = settings.data_dir / "fomo_handle.txt"
     if handle_file.exists() and not settings.fomo_handle:
@@ -512,18 +563,23 @@ async def start_desk(
         except Exception:
             pass
     desk = DeskRuntime(
-        settings, paper, live, journal, broadcast, risk, copy_cfg, get_paused, on_alert
+        settings, paper, live, journal, broadcast, risk, copy_cfg, feed_cfg, get_paused, on_alert
     )
     await desk.refresh_copy_wallets()
+    if feed_cfg.fomo_copy_mode:
+        await desk.bootstrap_fomo_copy()
 
     async def feed_heartbeat_loop() -> None:
         while running():
             if on_feed_heartbeat:
-                on_feed_heartbeat("pumpportal", status="ok", detail="subscribeNewToken")
+                if feed_cfg.pump_launch_feed:
+                    on_feed_heartbeat("pumpportal", status="ok", detail="subscribeNewToken")
+                else:
+                    on_feed_heartbeat("pumpportal", status="off", detail="fomo_copy_mode")
                 on_feed_heartbeat(
                     "cope",
                     status="ok" if settings.cope_api_key else "off",
-                    detail="poll" if settings.cope_api_key else None,
+                    detail=f"poll/{feed_cfg.cope_poll_sec}s" if settings.cope_api_key else None,
                 )
                 on_feed_heartbeat(
                     "copy_stream",
@@ -532,13 +588,6 @@ async def start_desk(
             await asyncio.sleep(45)
 
     tasks = [
-        asyncio.create_task(
-            pumpportal_listener(
-                api_key=settings.pumpportal_api_key,
-                on_candidate=desk._on_pump,
-                running=running,
-            )
-        ),
         asyncio.create_task(feed_heartbeat_loop()),
         asyncio.create_task(desk.cope_poller(running)),
         asyncio.create_task(desk.copy_wallet_poller(running)),
@@ -546,6 +595,18 @@ async def start_desk(
         asyncio.create_task(desk.monitor_positions(get_mode, running)),
         asyncio.create_task(desk.learner_scheduler(running)),
     ]
+
+    if feed_cfg.pump_launch_feed:
+        tasks.insert(
+            0,
+            asyncio.create_task(
+                pumpportal_listener(
+                    api_key=settings.pumpportal_api_key,
+                    on_candidate=desk._on_pump,
+                    running=running,
+                )
+            ),
+        )
 
     if settings.pumpportal_api_key and copy_cfg.enabled:
 

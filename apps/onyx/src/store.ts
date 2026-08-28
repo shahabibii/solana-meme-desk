@@ -59,6 +59,8 @@ type DeskState = {
   equityPoints: { ts: string; equity_sol: number }[];
   learnerWeights: Record<string, number>;
   fomoEnabled: boolean;
+  fomoCopyMode: boolean;
+  copyWalletCount: number;
   onChainSol: number | null;
   sniperHealth: Record<string, unknown> | null;
   paused: boolean;
@@ -107,6 +109,8 @@ export const useDesk = create<DeskState>((set, get) => ({
   equityPoints: [],
   learnerWeights: { pump: 1, fomo: 1, convergence: 1.2, copy: 1.15, safety: 1 },
   fomoEnabled: false,
+  fomoCopyMode: false,
+  copyWalletCount: 0,
   onChainSol: null,
   sniperHealth: null,
   paused: false,
@@ -137,6 +141,9 @@ export const useDesk = create<DeskState>((set, get) => ({
     if (p.learner_weights)
       set({ learnerWeights: p.learner_weights as Record<string, number> });
     if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
+    if (typeof p.fomo_copy_mode === "boolean") set({ fomoCopyMode: p.fomo_copy_mode });
+    const ct = p.copy_trading as { wallets?: number } | undefined;
+    if (ct && typeof ct.wallets === "number") set({ copyWalletCount: ct.wallets });
     if (p.sniper_health) set({ sniperHealth: p.sniper_health as Record<string, unknown> });
     if (typeof p.paused === "boolean") set({ paused: p.paused });
     if (p.integrations)

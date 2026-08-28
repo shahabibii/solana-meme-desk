@@ -28,6 +28,8 @@ export default function Sidebar({
   onListen,
   onCommand,
   onCopyPubkey,
+  fomoCopyMode,
+  copyWalletCount,
 }: {
   equitySol: number;
   cashSol: number;
@@ -44,6 +46,8 @@ export default function Sidebar({
   onListen: () => void;
   onCommand: (cmd: string) => void;
   onCopyPubkey: () => void;
+  fomoCopyMode?: boolean;
+  copyWalletCount?: number;
 }) {
   const waveRef = useRef<HTMLCanvasElement>(null);
   useWaveform(waveRef, listening || voiceActive, "#7BE8FF", 0.14);
@@ -163,12 +167,23 @@ export default function Sidebar({
           {paused && <span className="dot warn" style={{ width: 5, height: 5 }} />}
         </div>
         <div className="cmds">
+          {fomoCopyMode && (
+            <button type="button" className="cmd" onClick={() => onCommand("fomo_sync")}>
+              Sync Fomo
+            </button>
+          )}
           <button
             type="button"
             className="cmd live"
-            disabled={modeBusy || !liveReady}
+            disabled={modeBusy || !liveReady || fomoCopyMode}
             onClick={() => onCommand("arm_live")}
-            title={!liveReady ? "Fund live wallet first" : "Arm LIVE and keep running on server"}
+            title={
+              fomoCopyMode
+                ? "Fomo Copy Mode is paper-only"
+                : !liveReady
+                  ? "Fund live wallet first"
+                  : "Arm LIVE and keep running on server"
+            }
           >
             Arm LIVE & Run
           </button>
@@ -182,11 +197,13 @@ export default function Sidebar({
           </button>
         </div>
         <p className="deskctl-hint">
-          {paused
-            ? "Stopped — no new buys. Exits still run."
-            : mode === "live"
-              ? "Live on server — close browser anytime."
-              : "Arms live + runs 24/7 on Fly."}
+          {fomoCopyMode
+            ? `Fomo Copy · ${copyWalletCount ?? 0} wallets · paper only`
+            : paused
+              ? "Stopped — no new buys. Exits still run."
+              : mode === "live"
+                ? "Live on server — close browser anytime."
+                : "Arms live + runs 24/7 on Fly."}
         </p>
       </div>
 
