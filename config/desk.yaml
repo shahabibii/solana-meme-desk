@@ -1,9 +1,12 @@
-# Desk feed strategy — Fomo Copy Mode (smart-money first, no raw pump firehose)
+# Desk feed strategy — wallet-first copy mode (Cope down: rely on curated wallets)
 
 fomo_copy_mode: true
 pump_launch_feed: false
 helius_wallet_watch: true
-cope_poll_sec: 20
+# Cope is DNS-dead; poll rarely so we don't spam logs (manual wallets are primary)
+cope_poll_sec: 600
+# Helius address poller — primary signal path while Cope is down
+helius_poll_sec: 6
 
 # Only these sources enter the agent pipeline when fomo_copy_mode is on
 allowed_sources:
@@ -11,25 +14,26 @@ allowed_sources:
   - convergence
   - fomo
 
-# Copy/convergence entry bar — raised copy to reduce low-quality mirrors
+# Curated wallets get a slightly lower bar; safety + copy boost still gate entries
 entry_min_score:
-  default: 72
-  copy: 72
-  convergence: 68
+  default: 70
+  copy: 68
+  convergence: 65
   fomo: 68
 
 # No stale relay backfill on deploy — live signals only
 fomo_relay_backfill_minutes: 0
 
-# Copy-trading improvements (convergence, mirror sells, smart dedup)
+# Wallet-first copy: one smart-money buy can enter; 2+ wallets size-boost
 copy_improvements:
   convergence_window_sec: 600
   convergence_min_wallets: 2
-  require_convergence_for_copy: true
+  require_convergence_for_copy: false
   convergence_boost_per_wallet: 12
-  convergence_size_step: 0.15
+  convergence_size_step: 0.2
   convergence_size_cap: 2.0
-  mirror_sell_enabled: false
+  # Exit when watched wallets dump — critical while holding live bags
+  mirror_sell_enabled: true
   mirror_sell_fraction: 0.5
   mirror_sell_full_wallets: 2
   retry_after_block: true

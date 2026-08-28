@@ -485,7 +485,10 @@ async def helius_webhook(
 async def helius_sync_webhook() -> dict[str, Any]:
     if not _desk:
         raise HTTPException(503, detail="Desk not ready")
-    result = await _desk.sync_helius_webhook()
+    try:
+        result = await _desk.sync_helius_webhook()
+    except Exception as exc:
+        raise HTTPException(502, detail=str(exc)[:240]) from exc
     await _broadcast(status_snapshot(await _desk_status()))
     return result
 

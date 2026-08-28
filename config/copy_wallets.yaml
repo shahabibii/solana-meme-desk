@@ -1,21 +1,32 @@
-# Wallets to mirror via PumpPortal subscribeAccountTrade.
-# Cope /fomo top-trader poll fills this list when COPE_API_KEY is set.
-# Manual wallets also loaded from config/fomo_wallets.yaml (handle → address map).
+# Curated smart-money wallets — primary copy source while Cope is down.
+# PumpPortal subscribeAccountTrade + Helius poller/webhook watch these.
 
 copy:
   enabled: true
-  min_trader_sol: 0.05
+  min_trader_sol: 0.03
   copy_ratio: 0.25
   max_wallets: 20
-  copy_boost: 25
+  copy_boost: 28
   min_trader_win_rate: 0.55
 
-# PumpPortal subscribeAccountTrade keys (full base58, >= 32 chars).
-# Populate via fomo_wallets.yaml or POST /api/copy/wallets after clicking Copy on fomo profiles.
-wallets: []
+# Flat list for loaders / PumpPortal subscribeAccountTrade
+wallets:
+  - "J9WiAZKf8JnCkHFL8fLCCXdEgdoLjLRqU2EGsDjdqYga"  # change
+  - "HDixbrzwwLXczhDBk1JVrurPQsuLE8FUKnW2pucSXN3o"  # PoorGoat_
+  - "CzU8MaRcwvwUoNkwJFLbvtFWJugcEXAhDDQqNFE4ybb7"  # Rowdy
+  - "2yXwy5Dsa1XtEXcsrkFVRJeyuWD3qKkMN3pP3p5VTW3V"  # Salem1299534
+  - "H2uRkYPzvXLYmhPfMh4X6jijAMKcynedszDz3SECaRw9"  # MEADGod
+  - "2heJbC32Tpfcb3nbUb5ER61K11FGZVfVGtVnDm6LDogF"  # unipcs
+  - "5FGoPPj1nL8LCnfVnpTmreqQtqLuMXXAwuS1uahMrp8V"  # DumbCrayonEater
+  - "2xUbYAVq1oJGj45d6JjnaYHAke3NQecUcqWvvVbwmYw8"  # ether_monk
+  - "F5hkYsi8JxjyA2JHN5CA7MbnnhWubkXB2ZQB7Gkaxqs6"  # F5hkYsi8
+  - "5opd5KBmodmoNuAThQ5cmXKbRxHbQDfomWGKAs3uEUP9"  # 5opd5KB
+  - "7iPPqPyrqcmfenRs4xZ72ab4pyuUofXB5YaQB83WJmT9"  # 7iPPqPy
+  - "8f39XhhZoRD8sYb6K5K9N7iSHXkL7BDmFFQNDF3TtsEr"  # 8f39Xhh
+  - "GFRjGNXY8JrGSPC46inqrH4XPdUFMDLkE1oNm1nXiPsJ"  # GFRjGNX
+  - "DCeH3aCsstGUSxQqS72VBZwTydoor1nQ6dWaxrgGQk39"  # DCeH3aC
 
-# Handle → verified SOL wallet (from fomo.family profile screenshots, Aug 27 2026).
-# Truncated in UI — paste full addresses into fomo_wallets.yaml to activate copy-stream.
+# Handle → wallet map (UI / audit labels)
 wallets_with_handles:
   change: "J9WiAZKf8JnCkHFL8fLCCXdEgdoLjLRqU2EGsDjdqYga"
   PoorGoat_: "HDixbrzwwLXczhDBk1JVrurPQsuLE8FUKnW2pucSXN3o"

@@ -95,6 +95,8 @@ class DeskRuntime:
         self._copy_signals_enqueued = 0
         self._helius_webhook_state: dict | None = None
         self._helius_poller_seen: dict[str, set[str]] = {}
+        self._last_webhook_sync = 0.0
+        self._cope_backoff_until = 0.0
         self._wallet_mint_cache: dict[str, dict[str, float]] = {}
         self._fomo_relay_seen: set[str] = set()
         self._mirror_sell_seen: set[str] = set()
@@ -534,6 +536,7 @@ class DeskRuntime:
             data_dir=self.settings.data_dir,
         )
         self._helius_webhook_state = result
+        self._last_webhook_sync = time.time()
         return result
 
     async def backfill_fomo_relays(self, mode: DeskMode, *, minutes: int = 45) -> int:
@@ -762,11 +765,17 @@ class DeskRuntime:
                 "mirror_sell": bool(
                     self.feed_cfg.copy_improvements and self.feed_cfg.copy_improvements.mirror_sell_enabled
                 ),
+                "require_convergence": bool(
+                    self.feed_cfg.copy_improvements
+                    and self.feed_cfg.copy_improvements.require_convergence_for_copy
+                ),
                 "convergence_window_sec": (
                     self.feed_cfg.copy_improvements.convergence_window_sec
                     if self.feed_cfg.copy_improvements
                     else 600
                 ),
+                "helius_poll_sec": self.feed_cfg.helius_poll_sec,
+                "wallet_first": True,
             },
             "daily_loss_sol": {
                 "paper": round(self.risk.daily_realized_loss_sol("paper"), 4),
@@ -780,19 +789,39 @@ class DeskRuntime:
         while running():
             if self.copy_cfg.enabled:
                 await self.refresh_copy_wallets()
+                # Webhook sync is rate-limited by Helius — retry at most every 30 min
+                # unless we have no successful state yet.
                 if self.feed_cfg.helius_wallet_watch and self.settings.helius_api_key:
-                    try:
-                        await self.sync_helius_webhook()
-                    except Exception:
-                        pass
+                    hw = self._helius_webhook_state or {}
+                    due = time.time() - self._last_webhook_sync > 1800
+                    if due or not hw.get("ok"):
+                        try:
+                            await self.sync_helius_webhook()
+                        except Exception as exc:
+                            log.warning("helius webhook sync: %s", exc)
+                            self._helius_webhook_state = {
+                                "ok": False,
+                                "reason": str(exc)[:160],
+                            }
+                            self._last_webhook_sync = time.time()
             await asyncio.sleep(interval)
 
     async def cope_poller(self, running: Callable[[], bool]) -> None:
         poll_sec = self.feed_cfg.cope_poll_sec or self.settings.cope_poll_sec
         while running():
-            if self.cope.enabled:
-                for c in await self.cope.poll_candidates():
-                    await self.enqueue(c)
+            if self.cope.enabled and time.time() >= self._cope_backoff_until:
+                health = await self.cope.health()
+                if not health.get("reachable"):
+                    # Cope DNS/API down — back off hard; manual wallets are primary.
+                    self._cope_backoff_until = time.time() + max(poll_sec, 600)
+                    log.warning(
+                        "cope unreachable — pausing polls for %ss (%s)",
+                        int(max(poll_sec, 600)),
+                        (health.get("error") or "")[:120],
+                    )
+                else:
+                    for c in await self.cope.poll_candidates():
+                        await self.enqueue(c)
             await asyncio.sleep(poll_sec)
 
     async def pipeline_worker(self, get_mode: Callable[[], DeskMode], running: Callable[[], bool]) -> None:
@@ -1329,18 +1358,25 @@ async def start_desk(
                     on_feed_heartbeat("pumpportal", status="ok", detail="subscribeNewToken")
                 else:
                     on_feed_heartbeat("pumpportal", status="off", detail="fomo_copy_mode")
+                cope_down = time.time() < desk._cope_backoff_until
                 on_feed_heartbeat(
                     "cope",
-                    status="ok" if settings.cope_api_key else "off",
-                    detail=f"poll/{feed_cfg.cope_poll_sec}s" if settings.cope_api_key else None,
+                    status="off" if (not settings.cope_api_key or cope_down) else "ok",
+                    detail=(
+                        "unreachable_backoff"
+                        if cope_down
+                        else (f"poll/{feed_cfg.cope_poll_sec}s" if settings.cope_api_key else None)
+                    ),
                 )
                 on_feed_heartbeat(
                     "copy_stream",
                     status="ok" if settings.pumpportal_api_key and copy_cfg.enabled else "off",
+                    detail=f"{len(desk._copy_wallets)} wallets",
                 )
                 on_feed_heartbeat(
                     "helius_poller",
                     status="ok" if settings.helius_api_key and feed_cfg.helius_wallet_watch else "off",
+                    detail=f"poll/{feed_cfg.helius_poll_sec}s · {len(desk._copy_wallets)} wallets",
                 )
                 hw = desk._helius_webhook_state or {}
                 on_feed_heartbeat(
@@ -1405,8 +1441,8 @@ async def start_desk(
                 on_trade=_on_polled,
                 seen=desk._helius_poller_seen,
                 running=running,
-                interval_sec=12.0,
-                limit=25,
+                interval_sec=max(4.0, float(feed_cfg.helius_poll_sec or 6.0)),
+                limit=30,
             )
 
         tasks.append(asyncio.create_task(_helius_poll_loop()))

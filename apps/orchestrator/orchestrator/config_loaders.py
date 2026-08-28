@@ -17,6 +17,7 @@ class DeskFeedConfig:
     pump_launch_feed: bool = True
     helius_wallet_watch: bool = True
     cope_poll_sec: int = 60
+    helius_poll_sec: float = 6.0
     allowed_sources: frozenset[str] = frozenset({"copy", "convergence", "fomo"})
     entry_min_score_default: int = 72
     entry_min_score_by_source: dict[str, int] = field(default_factory=dict)
@@ -155,6 +156,7 @@ def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
         pump_launch_feed=pump_feed,
         helius_wallet_watch=bool(raw.get("helius_wallet_watch", True)),
         cope_poll_sec=int(raw.get("cope_poll_sec", 60)),
+        helius_poll_sec=float(raw.get("helius_poll_sec", 6)),
         allowed_sources=frozenset(str(s) for s in allowed),
         entry_min_score_default=default_score,
         entry_min_score_by_source=by_source,

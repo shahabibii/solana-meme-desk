@@ -326,6 +326,12 @@ async def list_webhooks(api_key: str) -> list[dict[str, Any]]:
     url = f"{HELIUS_API}?api-key={api_key}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url)
+        if resp.status_code == 429:
+            raise httpx.HTTPStatusError(
+                "429 Too Many Requests",
+                request=resp.request,
+                response=resp,
+            )
         resp.raise_for_status()
         data = resp.json()
         return data if isinstance(data, list) else []
@@ -363,35 +369,98 @@ async def sync_wallet_webhook(
     webhook_id = stored.get("webhook_id")
     base = f"{HELIUS_API}?api-key={api_key}"
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        if webhook_id:
-            resp = await client.put(f"{HELIUS_API}/{webhook_id}?api-key={api_key}", json=payload)
-            if resp.status_code in (200, 204):
-                stored.update({"webhook_id": webhook_id, "wallets": len(cleaned), "webhookURL": webhook_url})
-                state_path.write_text(json.dumps(stored, indent=2))
-                return {"ok": True, "action": "updated", "webhook_id": webhook_id, "wallets": len(cleaned)}
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            if webhook_id:
+                resp = await client.put(
+                    f"{HELIUS_API}/{webhook_id}?api-key={api_key}", json=payload
+                )
+                if resp.status_code in (200, 204):
+                    stored.update(
+                        {
+                            "webhook_id": webhook_id,
+                            "wallets": len(cleaned),
+                            "webhookURL": webhook_url,
+                        }
+                    )
+                    state_path.write_text(json.dumps(stored, indent=2))
+                    return {
+                        "ok": True,
+                        "action": "updated",
+                        "webhook_id": webhook_id,
+                        "wallets": len(cleaned),
+                    }
+                if resp.status_code == 429:
+                    return {
+                        "ok": False,
+                        "reason": "helius_rate_limited",
+                        "webhook_id": webhook_id,
+                        "wallets": len(cleaned),
+                        "cached": True,
+                    }
 
-        existing = await list_webhooks(api_key)
-        for wh in existing:
-            if str(wh.get("webhookURL") or "") == webhook_url:
-                webhook_id = wh.get("webhookID") or wh.get("webhookId") or wh.get("id")
-                if webhook_id:
-                    resp = await client.put(f"{HELIUS_API}/{webhook_id}?api-key={api_key}", json=payload)
-                    if resp.status_code in (200, 204):
-                        stored.update({"webhook_id": webhook_id, "wallets": len(cleaned), "webhookURL": webhook_url})
-                        state_path.write_text(json.dumps(stored, indent=2))
-                        return {"ok": True, "action": "updated", "webhook_id": webhook_id, "wallets": len(cleaned)}
-                    detail = resp.text[:240]
-                    log.warning("helius webhook update failed: %s", detail)
-                    return {"ok": False, "reason": detail}
+            try:
+                existing = await list_webhooks(api_key)
+            except httpx.HTTPStatusError as exc:
+                if exc.response is not None and exc.response.status_code == 429:
+                    return {
+                        "ok": bool(webhook_id),
+                        "reason": "helius_rate_limited",
+                        "webhook_id": webhook_id,
+                        "wallets": len(cleaned),
+                        "cached": bool(webhook_id),
+                    }
+                raise
 
-        resp = await client.post(base, json=payload)
-        if resp.status_code not in (200, 201):
-            detail = resp.text[:240]
-            log.warning("helius webhook create failed: %s", detail)
-            return {"ok": False, "reason": detail}
-        data = resp.json()
-        webhook_id = data.get("webhookID") or data.get("webhookId") or data.get("id")
-        stored.update({"webhook_id": webhook_id, "wallets": len(cleaned), "webhookURL": webhook_url})
-        state_path.write_text(json.dumps(stored, indent=2))
-        return {"ok": True, "action": "created", "webhook_id": webhook_id, "wallets": len(cleaned)}
+            for wh in existing:
+                if str(wh.get("webhookURL") or "") == webhook_url:
+                    webhook_id = wh.get("webhookID") or wh.get("webhookId") or wh.get("id")
+                    if webhook_id:
+                        resp = await client.put(
+                            f"{HELIUS_API}/{webhook_id}?api-key={api_key}", json=payload
+                        )
+                        if resp.status_code in (200, 204):
+                            stored.update(
+                                {
+                                    "webhook_id": webhook_id,
+                                    "wallets": len(cleaned),
+                                    "webhookURL": webhook_url,
+                                }
+                            )
+                            state_path.write_text(json.dumps(stored, indent=2))
+                            return {
+                                "ok": True,
+                                "action": "updated",
+                                "webhook_id": webhook_id,
+                                "wallets": len(cleaned),
+                            }
+                        detail = resp.text[:240]
+                        log.warning("helius webhook update failed: %s", detail)
+                        return {"ok": False, "reason": detail}
+
+            resp = await client.post(base, json=payload)
+            if resp.status_code == 429:
+                return {"ok": False, "reason": "helius_rate_limited", "wallets": len(cleaned)}
+            if resp.status_code not in (200, 201):
+                detail = resp.text[:240]
+                log.warning("helius webhook create failed: %s", detail)
+                return {"ok": False, "reason": detail}
+            data = resp.json()
+            webhook_id = data.get("webhookID") or data.get("webhookId") or data.get("id")
+            stored.update(
+                {
+                    "webhook_id": webhook_id,
+                    "wallets": len(cleaned),
+                    "webhookURL": webhook_url,
+                }
+            )
+            state_path.write_text(json.dumps(stored, indent=2))
+            return {
+                "ok": True,
+                "action": "created",
+                "webhook_id": webhook_id,
+                "wallets": len(cleaned),
+            }
+    except Exception as exc:
+        log.warning("helius webhook sync error: %s", exc)
+        return {"ok": False, "reason": str(exc)[:200], "wallets": len(cleaned)}
