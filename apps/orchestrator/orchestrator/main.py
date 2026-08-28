@@ -160,8 +160,13 @@ def _setup_checklist() -> dict[str, Any]:
             "ALERT_WEBHOOK_URL — optional Slack/Discord alerts on fills/loss cap"
         )
     wallets = len(_desk._copy_wallets) if _desk else 0
+    manual = len(_desk.fomo_follows.handles) if _desk else 0
     if wallets == 0:
-        if fomo_copy:
+        if fomo_copy and manual:
+            missing.append(
+                f"Cope API offline — {manual} fomo follows configured; signals resume when Cope reconnects"
+            )
+        elif fomo_copy:
             missing.append("Fomo sync — POST /api/desk/fomo-bootstrap or /api/fomo/sync")
         elif not flags["pumpportal_key"]:
             missing.append("copy_wallets.yaml or Cope top-trader poll — no mirror wallets yet")
@@ -261,6 +266,8 @@ async def _desk_status() -> dict[str, Any]:
     if _desk:
         base["wallet"] = await _desk.wallet_snapshot(_desk_mode)
         base.update(_desk.status_extra())
+        base["cope_health"] = await _desk.cope.health()
+        base["fomo_follow_handles"] = list(_desk.fomo_follows.handles)
     base["sniper_health"] = _sniper_health.snapshot()
     return base
 

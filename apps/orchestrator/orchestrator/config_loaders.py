@@ -62,6 +62,31 @@ def load_copy_config(config_dir: Path, data_dir: Path | None = None) -> CopyConf
     return cfg
 
 
+@dataclass
+class FomoFollowsConfig:
+    owner: str | None = None
+    handles: list[str] = field(default_factory=list)
+
+
+def load_fomo_follows_config(config_dir: Path) -> FomoFollowsConfig:
+    path = config_dir / "fomo_follows.yaml"
+    if not path.exists():
+        return FomoFollowsConfig()
+    raw = yaml.safe_load(path.read_text()) or {}
+    handles: list[str] = []
+    seen: set[str] = set()
+    for item in raw.get("follows") or []:
+        h = str(item).strip().lstrip("@")
+        if h and h not in seen:
+            seen.add(h)
+            handles.append(h)
+    owner = raw.get("owner")
+    return FomoFollowsConfig(
+        owner=str(owner).strip().lstrip("@") if owner else None,
+        handles=handles,
+    )
+
+
 def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
     path = config_dir / "desk.yaml"
     if not path.exists():

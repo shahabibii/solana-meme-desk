@@ -14,7 +14,14 @@ from orchestrator.agents.safety import run_safety
 from orchestrator.agents.scorer import run_learner, score_candidate
 from orchestrator.agents.scout import scout_evaluate
 from orchestrator.config import DeskMode, Settings
-from orchestrator.config_loaders import CopyConfig, DeskFeedConfig, load_copy_config, load_desk_feed_config
+from orchestrator.config_loaders import (
+    CopyConfig,
+    DeskFeedConfig,
+    FomoFollowsConfig,
+    load_copy_config,
+    load_desk_feed_config,
+    load_fomo_follows_config,
+)
 from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook, RiskLimits
 from orchestrator.feeds.copy_trades import account_trade_listener
@@ -44,6 +51,7 @@ class DeskRuntime:
         risk: RiskManager,
         copy_cfg: CopyConfig,
         feed_cfg: DeskFeedConfig,
+        fomo_follows: FomoFollowsConfig,
         get_paused: Callable[[], bool] | None = None,
         on_alert: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
@@ -55,7 +63,11 @@ class DeskRuntime:
         self.risk = risk
         self.copy_cfg = copy_cfg
         self.feed_cfg = feed_cfg
+        self.fomo_follows = fomo_follows
         self.cope = CopeClient(settings.cope_api_key)
+        if fomo_follows.handles:
+            self.cope.set_manual_handles(fomo_follows.handles)
+            self.cope._handles = list(fomo_follows.handles)
         self._queue: asyncio.Queue[MintCandidate] = asyncio.Queue(maxsize=200)
         self._seen: set[str] = set()
         self._processing: set[str] = set()
@@ -141,10 +153,11 @@ class DeskRuntime:
             "ok": True,
             "fomo_handle": handle,
             "handles": len(handles),
+            "manual_follows": len(self.fomo_follows.handles),
             "wallets": len(wallets),
             "seeded_candidates": seeded,
             "fomo_copy_mode": self.feed_cfg.fomo_copy_mode,
-            "follows": handles,
+            "follows": handles or list(self.fomo_follows.handles),
             "cope_error": self.cope.last_error,
         }
 
@@ -159,6 +172,7 @@ class DeskRuntime:
                 "pumpportal_required": bool(self.settings.pumpportal_api_key),
                 "fomo_handle": self.settings.fomo_handle,
                 "fomo_handles": list(self.cope._handles)[:20],
+                "manual_follows": len(self.fomo_follows.handles),
                 "cope_error": self.cope.last_error,
             },
             "daily_loss_sol": {
@@ -553,6 +567,7 @@ async def start_desk(
     risk = RiskManager(full, journal)
     copy_cfg = load_copy_config(settings.config_dir, settings.data_dir)
     feed_cfg = load_desk_feed_config(settings.config_dir)
+    fomo_follows = load_fomo_follows_config(settings.config_dir)
     if settings.fomo_copy_mode:
         feed_cfg.fomo_copy_mode = True
         feed_cfg.pump_launch_feed = settings.pump_launch_feed
@@ -565,8 +580,10 @@ async def start_desk(
             settings.fomo_handle = handle_file.read_text().strip() or None
         except Exception:
             pass
+    if not settings.fomo_handle and fomo_follows.owner:
+        settings.fomo_handle = fomo_follows.owner
     desk = DeskRuntime(
-        settings, paper, live, journal, broadcast, risk, copy_cfg, feed_cfg, get_paused, on_alert
+        settings, paper, live, journal, broadcast, risk, copy_cfg, feed_cfg, fomo_follows, get_paused, on_alert
     )
     await desk.refresh_copy_wallets()
     if feed_cfg.fomo_copy_mode:

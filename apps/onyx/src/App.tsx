@@ -551,6 +551,8 @@ export default function App() {
           onCopyPubkey={copyPubkey}
           fomoCopyMode={desk.fomoCopyMode}
           copyWalletCount={desk.copyWalletCount}
+          fomoFollowCount={desk.fomoFollowCount}
+          copeReachable={desk.copeReachable}
         />
 
         <HeaderBar
@@ -628,6 +630,13 @@ export default function App() {
       {modeError && (
         <p className="mode-banner" role="alert">
           {modeError}
+        </p>
+      )}
+
+      {desk.fomoCopyMode && desk.copeReachable === false && desk.fomoFollowCount > 0 && (
+        <p className="mode-banner cope-banner" role="status">
+          Cope API offline — {desk.fomoFollowCount} fomo follows loaded. Copy signals resume
+          automatically when Cope reconnects.
         </p>
       )}
 

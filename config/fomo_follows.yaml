@@ -1,0 +1,15 @@
+# Manual fomo.family follows — usernames only (no wallet addresses needed).
+# Used when Cope sync-fomo fails or api.cope.capital is down.
+# Desk polls /activity?handle=... for each when Cope is reachable.
+
+owner: shahabibii
+
+follows:
+  - change
+  - PoorGoat_
+  - Rowdy
+  - Salem1299534
+  - MEADGod
+  - unipcs
+  - DumbCrayonEater
+  - ether_monk

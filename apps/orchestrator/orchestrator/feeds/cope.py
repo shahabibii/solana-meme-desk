@@ -77,7 +77,20 @@ class CopeClient:
         self._key = api_key
         self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._handles: list[str] = []
+        self._manual_handles: list[str] = []
         self.last_error: str | None = None
+
+    def set_manual_handles(self, handles: list[str]) -> None:
+        seen: set[str] = set()
+        out: list[str] = []
+        for h in handles:
+            clean = str(h).strip().lstrip("@")
+            if clean and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        self._manual_handles = out
+        if out:
+            self._merge_handles(out)
 
     @property
     def enabled(self) -> bool:
@@ -241,18 +254,33 @@ class CopeClient:
                     out.append(str(h).lstrip("@"))
         return out
 
+    def _merge_handles(self, handles: list[str]) -> list[str]:
+        seen = {h.lstrip("@") for h in self._handles}
+        out = list(self._handles)
+        for h in handles:
+            clean = h.lstrip("@")
+            if clean and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        self._handles = out
+        return out
+
     async def resolve_handles(self) -> list[str]:
-        """Follows first, else leaderboard / search elite Solana traders."""
-        handles = await self.follows()
-        if handles:
-            return handles[:20]
+        """Manual follows first, then Cope account follows, else leaderboard fallback."""
+        if self._manual_handles:
+            self._merge_handles(self._manual_handles)
+        api_follows = await self.follows()
+        if api_follows:
+            self._merge_handles(api_follows)
+        if self._handles:
+            return self._handles[:20]
         handles = self._handles_from_rows(await self.leaderboard(timeframe="7d", limit=15))
         if handles:
-            return handles[:15]
+            return self._merge_handles(handles)[:15]
         handles = self._handles_from_rows(
             await self.search_traders(chain="solana", limit=15, min_win_rate=55)
         )
-        return handles[:15]
+        return self._merge_handles(handles)[:15]
 
     async def wallets_for_handles(self, handles: list[str], *, per_handle: int = 3) -> list[str]:
         """Pull Solana wallets from recent activity for each handle."""

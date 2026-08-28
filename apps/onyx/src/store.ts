@@ -61,6 +61,9 @@ type DeskState = {
   fomoEnabled: boolean;
   fomoCopyMode: boolean;
   copyWalletCount: number;
+  fomoFollowCount: number;
+  copeReachable: boolean | null;
+  copeError: string | null;
   onChainSol: number | null;
   sniperHealth: Record<string, unknown> | null;
   paused: boolean;
@@ -111,6 +114,9 @@ export const useDesk = create<DeskState>((set, get) => ({
   fomoEnabled: false,
   fomoCopyMode: false,
   copyWalletCount: 0,
+  fomoFollowCount: 0,
+  copeReachable: null,
+  copeError: null,
   onChainSol: null,
   sniperHealth: null,
   paused: false,
@@ -142,8 +148,21 @@ export const useDesk = create<DeskState>((set, get) => ({
       set({ learnerWeights: p.learner_weights as Record<string, number> });
     if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
     if (typeof p.fomo_copy_mode === "boolean") set({ fomoCopyMode: p.fomo_copy_mode });
-    const ct = p.copy_trading as { wallets?: number } | undefined;
+    const ct = p.copy_trading as { wallets?: number; cope_error?: string | null } | undefined;
     if (ct && typeof ct.wallets === "number") set({ copyWalletCount: ct.wallets });
+    if (Array.isArray(p.fomo_follow_handles))
+      set({ fomoFollowCount: p.fomo_follow_handles.length });
+    else if (ct && typeof ct.manual_follows === "number")
+      set({ fomoFollowCount: ct.manual_follows });
+    const ch = p.cope_health as { reachable?: boolean; error?: string } | undefined;
+    if (ch) {
+      set({
+        copeReachable: Boolean(ch.reachable),
+        copeError: ch.error ?? ct?.cope_error ?? null,
+      });
+    } else if (ct?.cope_error) {
+      set({ copeError: ct.cope_error });
+    }
     if (p.sniper_health) set({ sniperHealth: p.sniper_health as Record<string, unknown> });
     if (typeof p.paused === "boolean") set({ paused: p.paused });
     if (p.integrations)

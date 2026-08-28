@@ -30,6 +30,8 @@ export default function Sidebar({
   onCopyPubkey,
   fomoCopyMode,
   copyWalletCount,
+  fomoFollowCount,
+  copeReachable,
 }: {
   equitySol: number;
   cashSol: number;
@@ -48,6 +50,8 @@ export default function Sidebar({
   onCopyPubkey: () => void;
   fomoCopyMode?: boolean;
   copyWalletCount?: number;
+  fomoFollowCount?: number;
+  copeReachable?: boolean | null;
 }) {
   const waveRef = useRef<HTMLCanvasElement>(null);
   useWaveform(waveRef, listening || voiceActive, "#7BE8FF", 0.14);
@@ -198,7 +202,9 @@ export default function Sidebar({
         </div>
         <p className="deskctl-hint">
           {fomoCopyMode
-            ? `Fomo Copy · ${copyWalletCount ?? 0} wallets · paper only`
+            ? copeReachable === false
+              ? `${copyWalletCount ?? 0} wallets · ${fomoFollowCount ?? 0} follows queued`
+              : `Fomo Copy · ${copyWalletCount ?? 0} wallets · paper only`
             : paused
               ? "Stopped — no new buys. Exits still run."
               : mode === "live"
