@@ -20,7 +20,7 @@ primary_region = "iad"
   ORCHESTRATOR_URL = "http://127.0.0.1:8787"
   SNIPER_RS_ENABLED = "false"
   SNIPER_PLAN_BACKOFF_SEC = "120"
-  RUGCHECK_ENABLED = "true"
+  RUGCHECK_ENABLED = "false"
 
 [processes]
   web = "uvicorn orchestrator.main:app --host 0.0.0.0 --port 8787"
