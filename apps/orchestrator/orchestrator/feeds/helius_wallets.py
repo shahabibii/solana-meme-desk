@@ -10,11 +10,10 @@ from typing import Any
 
 import httpx
 
+from orchestrator.feeds.copy_filters import SOL_MINT, is_copyable_mint
 from orchestrator.models import MintCandidate
 
 log = logging.getLogger(__name__)
-
-SOL_MINT = "So11111111111111111111111111111111111111112"
 HELIUS_API = "https://api.helius.xyz/v0/webhooks"
 
 PUMP_VENUES = frozenset(
@@ -80,12 +79,23 @@ def _event_base(tx: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _copy_event(side: str, mint: str, tx: dict[str, Any], trader: str, **extra: Any) -> dict[str, Any] | None:
+    if not is_copyable_mint(mint):
+        return None
+    return {
+        **_event_base(tx),
+        "side": side,
+        "mint": mint,
+        "symbol": _symbol_from_tx(tx, mint),
+        "trader": trader,
+        **extra,
+    }
+
+
 def _parse_events_swap(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
     swap = (tx.get("events") or {}).get("swap")
     if not isinstance(swap, dict):
         return None
-
-    base = _event_base(tx)
 
     native_in = swap.get("nativeInput") or {}
     in_acct = str(native_in.get("account") or "")
@@ -96,14 +106,7 @@ def _parse_events_swap(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] 
             if not mint or mint == SOL_MINT:
                 continue
             if _user_from_entry(out) in watched or in_acct in watched:
-                return {
-                    **base,
-                    "side": "buy",
-                    "mint": mint,
-                    "symbol": _symbol_from_tx(tx, mint),
-                    "trader": in_acct,
-                    "trader_sol": sol,
-                }
+                return _copy_event("buy", mint, tx, in_acct, trader_sol=sol)
 
     for out in swap.get("tokenOutputs") or []:
         user = _user_from_entry(out)
@@ -119,14 +122,9 @@ def _parse_events_swap(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] 
                     sol = _sol_from_lamports(nt.get("amount"))
                     if sol:
                         break
-        return {
-            **base,
-            "side": "buy",
-            "mint": mint,
-            "symbol": _symbol_from_tx(tx, mint),
-            "trader": user,
-            "trader_sol": sol,
-        }
+        ev = _copy_event("buy", mint, tx, user, trader_sol=sol)
+        if ev:
+            return ev
 
     for inp in swap.get("tokenInputs") or []:
         user = _user_from_entry(inp)
@@ -135,13 +133,7 @@ def _parse_events_swap(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] 
             continue
         if _raw_amount(inp) <= 0:
             continue
-        return {
-            **base,
-            "side": "sell",
-            "mint": mint,
-            "symbol": _symbol_from_tx(tx, mint),
-            "trader": user,
-        }
+        return _copy_event("sell", mint, tx, user)
 
     native_out = swap.get("nativeOutput") or {}
     out_acct = str(native_out.get("account") or "")
@@ -149,19 +141,12 @@ def _parse_events_swap(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] 
         for inp in swap.get("tokenInputs") or []:
             mint = _mint_from_entry(inp)
             if mint and mint != SOL_MINT and _user_from_entry(inp) == out_acct:
-                return {
-                    **base,
-                    "side": "sell",
-                    "mint": mint,
-                    "symbol": _symbol_from_tx(tx, mint),
-                    "trader": out_acct,
-                }
+                return _copy_event("sell", mint, tx, out_acct)
 
     return None
 
 
 def _parse_account_data(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
-    base = _event_base(tx)
     for acc in tx.get("accountData") or []:
         account = str(acc.get("account") or "")
         if account not in watched:
@@ -189,29 +174,23 @@ def _parse_account_data(tx: dict[str, Any], watched: set[str]) -> dict[str, Any]
         sol_spent = max(0.0, -native_change / 1_000_000_000.0)
 
         if bought_mint and (native_change < -500_000 or len(token_changes) > 0):
-            return {
-                **base,
-                "side": "buy",
-                "mint": bought_mint,
-                "symbol": _symbol_from_tx(tx, bought_mint),
-                "trader": account,
-                "trader_sol": round(sol_spent, 4) if sol_spent > 0 else None,
-            }
+            ev = _copy_event(
+                "buy",
+                bought_mint,
+                tx,
+                account,
+                trader_sol=round(sol_spent, 4) if sol_spent > 0 else None,
+            )
+            if ev:
+                return ev
 
         if sold_mint and (native_change > 500_000 or len(token_changes) > 0):
-            return {
-                **base,
-                "side": "sell",
-                "mint": sold_mint,
-                "symbol": _symbol_from_tx(tx, sold_mint),
-                "trader": account,
-            }
+            return _copy_event("sell", sold_mint, tx, account)
 
     return None
 
 
 def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
-    base = _event_base(tx)
     sol_spent: dict[str, float] = {}
     for nt in tx.get("nativeTransfers") or []:
         sender = str(nt.get("fromUserAccount") or "")
@@ -234,22 +213,11 @@ def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, A
         if amount <= 0:
             continue
         if to_acct in watched:
-            return {
-                **base,
-                "side": "buy",
-                "mint": mint,
-                "symbol": _symbol_from_tx(tx, mint),
-                "trader": to_acct,
-                "trader_sol": sol_spent.get(to_acct),
-            }
+            ev = _copy_event("buy", mint, tx, to_acct, trader_sol=sol_spent.get(to_acct))
+            if ev:
+                return ev
         if from_acct in watched:
-            return {
-                **base,
-                "side": "sell",
-                "mint": mint,
-                "symbol": _symbol_from_tx(tx, mint),
-                "trader": from_acct,
-            }
+            return _copy_event("sell", mint, tx, from_acct)
 
     fee_payer = str(tx.get("feePayer") or "")
     if fee_payer in watched:
@@ -260,22 +228,11 @@ def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, A
             to_acct = str(tt.get("toUserAccount") or "")
             from_acct = str(tt.get("fromUserAccount") or "")
             if to_acct == fee_payer:
-                return {
-                    **base,
-                    "side": "buy",
-                    "mint": mint,
-                    "symbol": _symbol_from_tx(tx, mint),
-                    "trader": fee_payer,
-                    "trader_sol": sol_spent.get(fee_payer),
-                }
+                ev = _copy_event("buy", mint, tx, fee_payer, trader_sol=sol_spent.get(fee_payer))
+                if ev:
+                    return ev
             if from_acct == fee_payer:
-                return {
-                    **base,
-                    "side": "sell",
-                    "mint": mint,
-                    "symbol": _symbol_from_tx(tx, mint),
-                    "trader": fee_payer,
-                }
+                return _copy_event("sell", mint, tx, fee_payer)
 
     return None
 
@@ -325,7 +282,7 @@ def swap_to_candidate(event: dict[str, Any], *, copy_boost: int = 25) -> MintCan
     if event.get("side") != "buy":
         return None
     mint = str(event.get("mint") or "")
-    if len(mint) < 32:
+    if not is_copyable_mint(mint):
         return None
     return MintCandidate(
         mint=mint,

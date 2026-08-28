@@ -1,9 +1,10 @@
 """Helius enhanced SWAP webhook parsing."""
 
+from orchestrator.feeds.copy_filters import USDC_MINT
 from orchestrator.feeds.helius_wallets import parse_helius_swap
 
 WALLET = "J9WiAZKf8JnCkHFL8fLCCXdEgdoLjLRqU2EGsDjdqYga"
-TOKEN = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+TOKEN = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"  # BONK-like length
 OTHER = "HDixbrzwwLXczhDBk1JVrurPQsuLE8FUKnW2pucSXN3o"
 
 
@@ -97,6 +98,28 @@ def test_ignores_unwatched_wallet() -> None:
             "swap": {
                 "nativeInput": {"account": OTHER, "amount": "1000000000"},
                 "tokenOutputs": [{"userAccount": OTHER, "mint": TOKEN, "rawTokenAmount": {"tokenAmount": "1"}}],
+            }
+        },
+    }
+    assert parse_helius_swap(tx, {WALLET}) is None
+
+
+def test_skips_stablecoin_buy() -> None:
+    tx = {
+        "type": "SWAP",
+        "source": "JUPITER",
+        "signature": "usdc1",
+        "feePayer": WALLET,
+        "events": {
+            "swap": {
+                "nativeInput": {"account": WALLET, "amount": "1500000000"},
+                "tokenOutputs": [
+                    {
+                        "userAccount": WALLET,
+                        "mint": USDC_MINT,
+                        "rawTokenAmount": {"tokenAmount": "225500000", "decimals": 6},
+                    }
+                ],
             }
         },
     }

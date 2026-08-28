@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 import websockets
 
+from orchestrator.feeds.copy_filters import is_copyable_mint
 from orchestrator.models import MintCandidate
 
 OnCopyTrade = Callable[[MintCandidate], Awaitable[None]]
@@ -48,7 +49,7 @@ def parse_account_trade(raw: dict[str, Any], *, copy_boost: int = 25) -> MintCan
         return None
 
     mint = _mint_from_raw(raw)
-    if not mint:
+    if not mint or not is_copyable_mint(mint):
         return None
 
     trader = _trader_from_raw(raw)
@@ -76,7 +77,7 @@ def parse_account_sell(raw: dict[str, Any]) -> dict[str, Any] | None:
     if tx and tx != "sell":
         return None
     mint = _mint_from_raw(raw)
-    if not mint:
+    if not mint or not is_copyable_mint(mint):
         return None
     trader = _trader_from_raw(raw)
     sol = raw.get("solAmount") or raw.get("sol_amount") or raw.get("amount")
