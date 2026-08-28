@@ -19,7 +19,7 @@ wallets: []
 wallets_with_handles:
   change: null           # J9WiAZKf8J…sDjdqYga
   PoorGoat_: null         # HDixbrzwL…pucSXN3o
-  Rowdy: null             # CzU8MaRcwv…NFE4ybb7
+  Rowdy: "CzU8MaRcwvwUoNkwJFLbvtFWJugcEXAhDDQqNFE4ybb7"
   Salem1299534: "2yXwy5Dsa1XtEXcsrkFVRJeyuWD3qKkMN3pP3p5VTW3V"
   MEADGod: "H2uRkYPzvXLYmhPfMh4X6jijAMKcynedszDz3SECaRw9"
   unipcs: "2heJbC32Tpfcb3nbUb5ER61K11FGZVfVGtVnDm6LDogF"
