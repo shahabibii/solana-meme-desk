@@ -98,6 +98,8 @@ class DeskRuntime:
         self._fomo_relay_seen: set[str] = set()
         self._mirror_sell_seen: set[str] = set()
         self._wallet_cache: dict | None = None
+        self._last_equity_journal = 0.0
+        self._last_equity_journal_ts = 0.0
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
 
@@ -841,6 +843,17 @@ class DeskRuntime:
                 "mode_wallet": "live",
             }
             self._wallet_cache = result
+            now = time.time()
+            if (
+                abs(equity - self._last_equity_journal) > 0.002
+                or now - self._last_equity_journal_ts > 45
+            ):
+                try:
+                    self.journal.record_equity(equity)
+                    self._last_equity_journal = equity
+                    self._last_equity_journal_ts = now
+                except Exception:
+                    pass
             return result
 
         snap = self.paper.to_dict()

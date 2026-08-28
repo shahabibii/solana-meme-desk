@@ -1,17 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { fetchTrades } from "../api";
-
-type Trade = {
-  id: number;
-  ts: string;
-  mint: string;
-  symbol: string;
-  side: string;
-  sol: number;
-  pnl_pct: number | null;
-  mode: string;
-  source: string;
-};
+import { useDesk, type TradeRow } from "../store";
 
 export default function TradeDrawer({
   open,
@@ -20,14 +9,16 @@ export default function TradeDrawer({
   open: boolean;
   onClose: () => void;
 }) {
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const trades = useDesk((s) => s.recentTrades);
+  const hydrate = useDesk((s) => s.hydrateFromBoot);
+  const equityPoints = useDesk((s) => s.equityPoints);
 
   useEffect(() => {
     if (!open) return;
     void fetchTrades(40)
-      .then((r) => setTrades(r.trades as Trade[]))
-      .catch(() => setTrades([]));
-  }, [open]);
+      .then((r) => hydrate(r.trades as Record<string, unknown>[], equityPoints))
+      .catch(() => undefined);
+  }, [open, hydrate, equityPoints]);
 
   if (!open) return null;
 
@@ -51,7 +42,7 @@ export default function TradeDrawer({
           </p>
         ) : (
           <ul className="drawer-list">
-            {trades.map((t) => (
+            {trades.map((t: TradeRow) => (
               <li key={t.id}>
                 <time>{t.ts.slice(11, 19)}</time>
                 <span>

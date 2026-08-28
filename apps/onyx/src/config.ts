@@ -8,6 +8,7 @@ export const API = {
   integrations: "/api/integrations",
   chat: "/api/chat",
   trades: "/api/trades",
+  session: "/api/session",
   learnerRun: "/api/learner/run",
   backtestRun: "/api/backtest/run",
   deskPause: "/api/desk/pause",

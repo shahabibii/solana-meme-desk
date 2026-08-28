@@ -1,5 +1,11 @@
 import { create } from "zustand";
 import { FEED_CAP, FILLS_CAP } from "./config";
+import {
+  loadSession,
+  type ApiTrade,
+  tradesToFeed,
+  tradesToFills,
+} from "./persist";
 
 export type DeskMode = "paper" | "live";
 
@@ -32,6 +38,18 @@ export type RecentFill = {
   ts: string;
 };
 
+export type TradeRow = {
+  id: number;
+  ts: string;
+  mint: string;
+  symbol: string;
+  side: string;
+  sol: number;
+  pnl_pct: number | null;
+  mode: string;
+  source: string;
+};
+
 export type CopyWatchEntry = {
   handle: string;
   wallet: string;
@@ -57,6 +75,7 @@ type DeskState = {
   agents: AgentState[];
   feed: FeedItem[];
   recentFills: RecentFill[];
+  recentTrades: TradeRow[];
   selectedMint: string | null;
   chartPoints: number[];
   busyAgent: string | null;
@@ -80,6 +99,10 @@ type DeskState = {
   setLiveReady: (v: boolean) => void;
   setConnected: (v: boolean) => void;
   applyStatus: (p: Record<string, unknown>) => void;
+  hydrateFromBoot: (
+    trades: Record<string, unknown>[],
+    equityPoints: { ts: string; equity_sol: number }[]
+  ) => void;
   pushFeed: (item: FeedItem) => void;
   pushFill: (fill: RecentFill) => void;
   setAgentRunning: (id: string) => void;
@@ -101,23 +124,56 @@ const AGENT_IDS = [
   { id: "learner", label: "Learner" },
 ];
 
+const cached = loadSession();
+
+function mergeFeed(existing: FeedItem[], incoming: FeedItem[]): FeedItem[] {
+  const seen = new Set(existing.map((f) => f.id));
+  const merged = [...existing];
+  for (const item of incoming) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      merged.push(item);
+    }
+  }
+  return merged.sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, FEED_CAP);
+}
+
+function mergeFills(existing: RecentFill[], incoming: RecentFill[]): RecentFill[] {
+  const seen = new Set(existing.map((f) => f.id));
+  const merged = [...existing];
+  for (const fill of incoming) {
+    if (!seen.has(fill.id)) {
+      seen.add(fill.id);
+      merged.push(fill);
+    }
+  }
+  return merged.sort((a, b) => b.ts.localeCompare(a.ts)).slice(0, FILLS_CAP);
+}
+
 export const useDesk = create<DeskState>((set, get) => ({
-  mode: "paper",
+  mode: (cached?.mode as DeskMode) ?? "paper",
   liveReady: false,
   connected: false,
-  equitySol: 1,
-  cashSol: 1,
-  positions: [],
+  equitySol: cached?.equitySol ?? 1,
+  cashSol: cached?.cashSol ?? 1,
+  positions: cached?.positions ?? [],
   agents: AGENT_IDS.map((a) => ({ ...a, status: "idle" as const })),
-  feed: [],
-  recentFills: [],
-  selectedMint: null,
-  chartPoints: [0, 2, -1, 4, 6, 3, 8, 5, 7, 4],
+  feed: cached?.feed ?? [],
+  recentFills: cached?.recentFills ?? [],
+  recentTrades: [],
+  selectedMint: cached?.selectedMint ?? null,
+  chartPoints: cached?.chartPoints?.length ? cached.chartPoints : [0, 2, -1, 4, 6, 3, 8, 5, 7, 4],
   busyAgent: null,
   lastScore: null,
-  stats: null,
-  equityPoints: [],
-  learnerWeights: { pump: 1, fomo: 1, convergence: 1.2, copy: 1.15, safety: 1 },
+  stats: cached?.stats ?? null,
+  equityPoints: cached?.equityPoints ?? [],
+  learnerWeights: cached?.learnerWeights ?? {
+    pump: 1,
+    fomo: 1,
+    convergence: 1.2,
+    copy: 1.15,
+    safety: 1,
+  },
   fomoEnabled: false,
   fomoCopyMode: false,
   copyWalletCount: 0,
@@ -125,7 +181,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   copyWatchlist: [],
   copeReachable: null,
   copeError: null,
-  onChainSol: null,
+  onChainSol: cached?.onChainSol ?? null,
   sniperHealth: null,
   paused: false,
   integrations: null,
@@ -133,19 +189,49 @@ export const useDesk = create<DeskState>((set, get) => ({
   setMode: (m) => set({ mode: m }),
   setLiveReady: (v) => set({ liveReady: v }),
   setConnected: (v) => set({ connected: v }),
+  hydrateFromBoot: (trades, equityPoints) => {
+    const rows = trades as TradeRow[];
+    const apiTrades = rows as unknown as ApiTrade[];
+    const fromFeed = tradesToFeed(apiTrades);
+    const fromFills = tradesToFills(apiTrades);
+    set((s) => {
+      const upnlChart = s.positions
+        .map((p) => p.upnl_pct)
+        .filter((v): v is number => v != null);
+      return {
+        recentTrades: rows,
+        feed: mergeFeed(s.feed, fromFeed),
+        recentFills: mergeFills(s.recentFills, fromFills),
+        equityPoints: equityPoints.length > 0 ? equityPoints : s.equityPoints,
+        chartPoints:
+          upnlChart.length >= 2
+            ? upnlChart
+            : s.chartPoints.length >= 2
+              ? s.chartPoints
+              : [s.equitySol * 0.98, s.equitySol],
+      };
+    });
+  },
   applyStatus: (p) => {
     const wallet = p.wallet as Record<string, unknown> | undefined;
     if (wallet) {
+      const positions = Array.isArray(wallet.positions)
+        ? (wallet.positions as Position[])
+        : get().positions;
       set({
         equitySol:
           wallet.equity_sol != null ? Number(wallet.equity_sol) : get().equitySol,
         cashSol: wallet.cash_sol != null ? Number(wallet.cash_sol) : get().cashSol,
-        positions: Array.isArray(wallet.positions)
-          ? (wallet.positions as Position[])
-          : get().positions,
+        positions,
         onChainSol:
           wallet.on_chain_sol != null ? Number(wallet.on_chain_sol) : get().onChainSol,
       });
+      const upnl = positions
+        .map((pos) => pos.upnl_pct)
+        .filter((v): v is number => v != null);
+      if (upnl.length >= 2) {
+        set({ chartPoints: upnl });
+      }
     }
     const integ = p.integrations as
       | Record<string, { active?: boolean; ready?: boolean; pubkey?: string }>
@@ -229,6 +315,6 @@ export const useDesk = create<DeskState>((set, get) => ({
     })),
   selectMint: (mint) => set({ selectedMint: mint }),
   pushChart: (v) => set((s) => ({ chartPoints: [...s.chartPoints.slice(-39), v] })),
-  setEquityPoints: (points) => set({ equityPoints: points }),
+  setEquityPoints: (points) => set({ equityPoints: points.length ? points : get().equityPoints }),
   setLastScore: (n) => set({ lastScore: n }),
 }));

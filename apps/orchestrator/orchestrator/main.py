@@ -298,6 +298,15 @@ def trades(limit: int = 30) -> dict[str, Any]:
     return {"trades": journal.recent_trades(limit)}
 
 
+@app.get("/api/session")
+async def desk_session(trades_limit: int = 40, equity_limit: int = 120) -> dict[str, Any]:
+    """Single boot payload — status, journal trades, equity curve (survives page refresh)."""
+    base = await _desk_status()
+    base["trades"] = journal.recent_trades(trades_limit)
+    base["equity_curve"] = journal.equity_curve(equity_limit)
+    return base
+
+
 @app.post("/api/learner/run")
 def learner_run() -> dict[str, Any]:
     weights = run_learner(journal)

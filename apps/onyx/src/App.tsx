@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   chatOnyx,
   connectOnyx,
-  fetchEquityCurve,
   fetchIntegrations,
   fetchMode,
+  fetchSession,
   fetchStatus,
   runBacktest,
   runLearner,
@@ -15,6 +15,7 @@ import {
   bootstrapFomoCopy,
 } from "./api";
 import { BLOCK_SPEAK_THROTTLE_MS, POLL_MS } from "./config";
+import { useSessionPersist } from "./hooks/useSessionPersist";
 import { useDesk, type FeedItem } from "./store";
 import { speakText, loadVoiceConfig, startListening, unlockAudio, voiceSupport } from "./voice";
 import {
@@ -106,6 +107,7 @@ function readMute(): boolean {
 
 export default function App() {
   const desk = useDesk();
+  useSessionPersist();
   const starsRef = useRef<HTMLCanvasElement>(null);
   useStarfield(starsRef);
 
@@ -152,18 +154,44 @@ export default function App() {
 
   useEffect(() => {
     void loadVoiceConfig();
-    void fetchStatus().then((s) => desk.applyStatus(s));
-    void fetchMode().then((m) => {
-      desk.setMode(m.mode);
-      desk.setLiveReady(m.live_ready);
-    });
-    void fetchIntegrations().then((i) =>
-      desk.applyStatus({ integrations: i.integrations })
-    );
-    void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
+
+    async function boot() {
+      try {
+        const session = await fetchSession();
+        desk.applyStatus(session);
+        desk.hydrateFromBoot(
+          (session.trades as Record<string, unknown>[]) ?? [],
+          (session.equity_curve as { ts: string; equity_sol: number }[]) ?? []
+        );
+        if (typeof session.mode === "string") {
+          desk.setMode(session.mode as "paper" | "live");
+        }
+        if (typeof session.live_ready === "boolean") {
+          desk.setLiveReady(session.live_ready);
+        }
+      } catch {
+        const [status, mode, integrations] = await Promise.all([
+          fetchStatus(),
+          fetchMode(),
+          fetchIntegrations(),
+        ]);
+        desk.applyStatus({ ...status, integrations: integrations.integrations });
+        desk.setMode(mode.mode);
+        desk.setLiveReady(mode.live_ready);
+      }
+    }
+    void boot();
+
     const iv = setInterval(() => {
-      void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
-      void fetchStatus().then((s) => desk.applyStatus(s));
+      void fetchSession()
+        .then((session) => {
+          desk.applyStatus(session);
+          desk.hydrateFromBoot(
+            (session.trades as Record<string, unknown>[]) ?? [],
+            (session.equity_curve as { ts: string; equity_sol: number }[]) ?? []
+          );
+        })
+        .catch(() => fetchStatus().then((s) => desk.applyStatus(s)));
       void fetchMode().then((m) => {
         desk.setMode(m.mode);
         desk.setLiveReady(m.live_ready);
@@ -219,8 +247,15 @@ export default function App() {
             side: String(data.side ?? "buy"),
             ts: String(data.ts ?? new Date().toISOString()),
           });
-          void fetchEquityCurve().then((c) => desk.setEquityPoints(c.points ?? []));
-          void fetchStatus().then((s) => desk.applyStatus(s));
+          void fetchSession()
+            .then((session) => {
+              desk.applyStatus(session);
+              desk.hydrateFromBoot(
+                (session.trades as Record<string, unknown>[]) ?? [],
+                (session.equity_curve as { ts: string; equity_sol: number }[]) ?? []
+              );
+            })
+            .catch(() => fetchStatus().then((s) => desk.applyStatus(s)));
         }
         if (data.type === "mint.blocked") {
           const now = Date.now();

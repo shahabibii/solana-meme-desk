@@ -112,6 +112,11 @@ export async function fetchTrades(limit = 20): Promise<{ trades: Record<string, 
   return r.json();
 }
 
+export async function fetchSession(): Promise<Record<string, unknown>> {
+  const r = await fetch(API.session);
+  return r.json();
+}
+
 export async function fetchStatus(): Promise<Record<string, unknown>> {
   const r = await fetch(API.status);
   return r.json();
