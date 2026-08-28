@@ -824,9 +824,15 @@ class DeskRuntime:
                         "safety_score": None,
                     }
                 )
-            equity = (on_chain or 0.0) + open_mtm
+            # If RPC balance unavailable, infer cash from last known minus open MTM.
+            cash = on_chain
+            if cash is None and self._wallet_cache:
+                prev_cash = self._wallet_cache.get("cash_sol")
+                if prev_cash and float(prev_cash) > 0:
+                    cash = float(prev_cash)
+            equity = (cash or 0.0) + open_mtm
             result = {
-                "cash_sol": round(on_chain or 0.0, 4),
+                "cash_sol": round(cash or 0.0, 4),
                 "equity_sol": round(equity, 4),
                 "on_chain_sol": round(on_chain, 4) if on_chain is not None else None,
                 "starting_sol": None,

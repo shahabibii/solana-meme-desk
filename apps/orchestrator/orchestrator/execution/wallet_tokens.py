@@ -19,6 +19,7 @@ from solders.transaction import Transaction
 from orchestrator.feeds.copy_filters import COPY_SKIP_MINTS, is_copyable_mint
 
 TOKEN_PROGRAM = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+TOKEN_2022_PROGRAM = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 
 
 @dataclass
@@ -31,44 +32,49 @@ class WalletToken:
 
 
 async def list_wallet_tokens(rpc_url: str, owner: str) -> list[WalletToken]:
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getTokenAccountsByOwner",
-        "params": [
-            owner,
-            {"programId": str(TOKEN_PROGRAM)},
-            {"encoding": "jsonParsed"},
-        ],
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(rpc_url, json=payload)
-        try:
-            data = resp.json()
-        except Exception:
-            return []
     out: list[WalletToken] = []
-    for item in (data.get("result") or {}).get("value") or []:
-        pubkey = str(item.get("pubkey") or "")
-        parsed = ((item.get("account") or {}).get("data") or {}).get("parsed", {})
-        info = parsed.get("info") or {}
-        mint = str(info.get("mint") or "")
-        if not is_copyable_mint(mint):
-            continue
-        token_amount = info.get("tokenAmount") or {}
-        amount_raw = int(str(token_amount.get("amount") or "0"))
-        ui_amount = float(token_amount.get("uiAmount") or 0)
-        if amount_raw <= 0:
-            continue
-        out.append(
-            WalletToken(
-                mint=mint,
-                account=pubkey,
-                amount_raw=amount_raw,
-                ui_amount=ui_amount,
-                decimals=int(token_amount.get("decimals") or 0),
+    seen_accounts: set[str] = set()
+    for program in (str(TOKEN_PROGRAM), str(TOKEN_2022_PROGRAM)):
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                owner,
+                {"programId": program},
+                {"encoding": "jsonParsed"},
+            ],
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(rpc_url, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                continue
+        for item in (data.get("result") or {}).get("value") or []:
+            pubkey = str(item.get("pubkey") or "")
+            if pubkey in seen_accounts:
+                continue
+            seen_accounts.add(pubkey)
+            parsed = ((item.get("account") or {}).get("data") or {}).get("parsed", {})
+            info = parsed.get("info") or {}
+            mint = str(info.get("mint") or "")
+            if not is_copyable_mint(mint):
+                continue
+            token_amount = info.get("tokenAmount") or {}
+            amount_raw = int(str(token_amount.get("amount") or "0"))
+            ui_amount = float(token_amount.get("uiAmount") or 0)
+            if amount_raw <= 0:
+                continue
+            out.append(
+                WalletToken(
+                    mint=mint,
+                    account=pubkey,
+                    amount_raw=amount_raw,
+                    ui_amount=ui_amount,
+                    decimals=int(token_amount.get("decimals") or 0),
+                )
             )
-        )
     return out
 
 

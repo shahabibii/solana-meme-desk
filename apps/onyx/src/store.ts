@@ -137,9 +137,12 @@ export const useDesk = create<DeskState>((set, get) => ({
     const wallet = p.wallet as Record<string, unknown> | undefined;
     if (wallet) {
       set({
-        equitySol: Number(wallet.equity_sol ?? get().equitySol),
-        cashSol: Number(wallet.cash_sol ?? get().cashSol),
-        positions: (wallet.positions as Position[]) ?? [],
+        equitySol:
+          wallet.equity_sol != null ? Number(wallet.equity_sol) : get().equitySol,
+        cashSol: wallet.cash_sol != null ? Number(wallet.cash_sol) : get().cashSol,
+        positions: Array.isArray(wallet.positions)
+          ? (wallet.positions as Position[])
+          : get().positions,
         onChainSol:
           wallet.on_chain_sol != null ? Number(wallet.on_chain_sol) : get().onChainSol,
       });

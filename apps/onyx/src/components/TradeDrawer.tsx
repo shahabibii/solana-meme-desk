@@ -24,7 +24,9 @@ export default function TradeDrawer({
 
   useEffect(() => {
     if (!open) return;
-    void fetchTrades(40).then((r) => setTrades(r.trades as Trade[]));
+    void fetchTrades(40)
+      .then((r) => setTrades(r.trades as Trade[]))
+      .catch(() => setTrades([]));
   }, [open]);
 
   if (!open) return null;
