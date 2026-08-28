@@ -633,7 +633,7 @@ export default function App() {
             <h2 id="live-title">Arm LIVE &amp; run?</h2>
             <p>
               {desk.fomoCopyMode
-                ? `Real SOL copy-trades from your ${desk.copyWalletCount} watched wallets (max 0.05 ◎ per position). The desk keeps running on the server — you can close this browser.`
+                ? `Real SOL copy-trades from your ${desk.copyWalletCount} watched wallets (max 0.07 ◎ per position). The desk keeps running on the server — you can close this browser.`
                 : "Real PumpPortal orders with your wallet. The desk keeps running on the server — you can close this browser."}
             </p>
             <div className="modal-actions">
