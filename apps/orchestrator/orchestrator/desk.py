@@ -86,6 +86,7 @@ class DeskRuntime:
         self._last_copy_refresh = 0.0
         self._copy_signals_seen = 0
         self._copy_signals_enqueued = 0
+        self._helius_webhook_state: dict | None = None
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
@@ -143,6 +144,37 @@ class DeskRuntime:
         self._copy_signals_seen += 1
         await self.enqueue(candidate)
 
+    async def on_helius_wallet_trade(self, event: dict, mode: DeskMode) -> None:
+        """Handle Helius SWAP events from Jupiter, Raydium, Orca, etc."""
+        from orchestrator.feeds.helius_wallets import swap_to_candidate
+
+        if event.get("side") == "sell":
+            await self.handle_copy_sell(event, mode)
+            return
+        cand = swap_to_candidate(event, copy_boost=self.copy_cfg.copy_boost)
+        if cand:
+            await self._on_copy_trade(cand)
+
+    async def sync_helius_webhook(self) -> dict:
+        from orchestrator.feeds.helius_wallets import sync_wallet_webhook
+
+        if not self.settings.helius_api_key or not self.feed_cfg.helius_wallet_watch:
+            return {"ok": False, "reason": "helius_wallet_watch_disabled"}
+        secret = self.settings.helius_webhook_secret or self.settings.sniper_ingest_secret
+        if not secret:
+            return {"ok": False, "reason": "HELIUS_WEBHOOK_SECRET not configured"}
+        url = f"{self.settings.orchestrator_public_url.rstrip('/')}/api/helius/webhook"
+        auth = f"Bearer {secret}"
+        result = await sync_wallet_webhook(
+            api_key=self.settings.helius_api_key,
+            webhook_url=url,
+            addresses=list(self._copy_wallets),
+            auth_header=auth,
+            data_dir=self.settings.data_dir,
+        )
+        self._helius_webhook_state = result
+        return result
+
     async def handle_copy_sell(self, event: dict, mode: DeskMode) -> None:
         """Mirror exit when a watched wallet sells a token we hold."""
         imp = self.feed_cfg.copy_improvements
@@ -196,8 +228,11 @@ class DeskRuntime:
             price, _ = await mark_price_usd(mint)
             entry_px = float(track.get("entry_price") or 0.0001)
             pct = ((price / entry_px) - 1.0) * 100.0 if price and entry_px > 0 else 0.0
+            sell_venue = event.get("venue") or track.get("venue")
             try:
-                result = await self.live.sell(mint, fraction)
+                result = await self.live.sell_for_venue(
+                    mint, fraction, str(sell_venue) if sell_venue else None
+                )
                 sig = result.get("signature", "")
                 proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
                 self.journal.record_trade(
@@ -311,6 +346,9 @@ class DeskRuntime:
                 "manual_wallets_active": len(self._copy_wallets) > 0,
                 "copy_signals_seen": self._copy_signals_seen,
                 "copy_signals_enqueued": self._copy_signals_enqueued,
+                "helius_wallet_watch": self.feed_cfg.helius_wallet_watch,
+                "venues": ["pumpportal", "jupiter"],
+                "helius_webhook": getattr(self, "_helius_webhook_state", None),
                 "mirror_sell": bool(
                     self.feed_cfg.copy_improvements and self.feed_cfg.copy_improvements.mirror_sell_enabled
                 ),
@@ -332,6 +370,11 @@ class DeskRuntime:
         while running():
             if self.copy_cfg.enabled:
                 await self.refresh_copy_wallets()
+                if self.feed_cfg.helius_wallet_watch and self.settings.helius_api_key:
+                    try:
+                        await self.sync_helius_webhook()
+                    except Exception:
+                        pass
             await asyncio.sleep(interval)
 
     async def cope_poller(self, running: Callable[[], bool]) -> None:
@@ -521,7 +564,8 @@ class DeskRuntime:
                     await self._agent_step("executor", mint, "REJECTED", 50, "risk_cap")
             elif self.live.ready:
                 try:
-                    result = await self.live.buy(mint, sol)
+                    venue = candidate.meta.get("venue")
+                    result = await self.live.buy_for_venue(mint, sol, str(venue) if venue else None)
                     sig = result.get("signature", "")
                     self.journal.record_trade(
                         mint=mint,
@@ -536,6 +580,7 @@ class DeskRuntime:
                             "signature": sig,
                             "price_src": price_src,
                             "convergence_count": conv,
+                            "venue": venue,
                             **result,
                         },
                     )
@@ -544,6 +589,7 @@ class DeskRuntime:
                         "entry_sol": sol,
                         "entry_ts": datetime.now(timezone.utc),
                         "source": candidate.source,
+                        "venue": venue,
                         "peak_pnl_pct": 0.0,
                         "entry_price": price or 0.0001,
                         "tp_hit": set(),
@@ -679,7 +725,10 @@ class DeskRuntime:
             if not exit_reason:
                 continue
             try:
-                result = await self.live.sell(mint, fraction)
+                venue = track.get("venue")
+                result = await self.live.sell_for_venue(
+                    mint, fraction, str(venue) if venue else None
+                )
                 sig = result.get("signature", "")
                 proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
                 if tp_level is not None:
@@ -775,6 +824,11 @@ async def start_desk(
         on_alert,
     )
     await desk.refresh_copy_wallets()
+    if feed_cfg.helius_wallet_watch and settings.helius_api_key:
+        try:
+            await desk.sync_helius_webhook()
+        except Exception:
+            pass
     if feed_cfg.fomo_copy_mode:
         await desk.bootstrap_fomo_copy()
 
@@ -793,6 +847,12 @@ async def start_desk(
                 on_feed_heartbeat(
                     "copy_stream",
                     status="ok" if settings.pumpportal_api_key and copy_cfg.enabled else "off",
+                )
+                hw = desk._helius_webhook_state or {}
+                on_feed_heartbeat(
+                    "helius_wallets",
+                    status="ok" if hw.get("ok") else "off",
+                    detail=f"{hw.get('wallets', 0)} wallets" if hw.get("ok") else hw.get("reason"),
                 )
             await asyncio.sleep(45)
 

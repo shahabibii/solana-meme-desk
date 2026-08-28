@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
     solana_private_key: str | None = None
     helius_api_key: str | None = None
+    helius_webhook_secret: str | None = None
+    orchestrator_public_url: str = "https://solana-meme-desk.fly.dev"
     yellowstone_grpc_endpoint: str = "https://laserstream-mainnet-ewr.helius-rpc.com"
     yellowstone_grpc_x_token: str | None = None
 
@@ -106,6 +108,8 @@ class Settings(BaseSettings):
         return {
             "solana_rpc": bool(self.solana_rpc_url),
             "helius": bool(self.helius_api_key),
+            "helius_wallets": bool(self.helius_api_key),
+            "jupiter_exec": bool(self.solana_private_key),
             "yellowstone_grpc": bool(
                 self.yellowstone_grpc_x_token or self.helius_api_key
             ),

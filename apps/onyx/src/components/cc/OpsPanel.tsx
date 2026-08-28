@@ -2,7 +2,9 @@ import type { RecentFill } from "../../store";
 
 const KEYS = [
   "helius",
+  "helius_wallets",
   "pumpportal",
+  "jupiter_exec",
   "solana_rpc",
   "copy_trading",
   "live_wallet",

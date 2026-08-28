@@ -11,6 +11,8 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
 from orchestrator.config import Settings
+from orchestrator.execution.jupiter import SOL_MINT, get_token_balance_raw, jupiter_swap
+from orchestrator.feeds.helius_wallets import is_pump_venue
 
 log = logging.getLogger(__name__)
 
@@ -77,9 +79,73 @@ class LiveExecutor:
     async def buy(self, mint: str, sol: float) -> dict[str, Any]:
         return await self._trade("buy", mint, sol, denominated_in_sol=True)
 
+    async def buy_for_venue(self, mint: str, sol: float, venue: str | None) -> dict[str, Any]:
+        if is_pump_venue(venue):
+            out = await self.buy(mint, sol)
+            out["venue_exec"] = "pumpportal"
+            return out
+        out = await self.jupiter_buy(mint, sol)
+        out["venue_exec"] = "jupiter"
+        return out
+
+    async def jupiter_buy(self, mint: str, sol: float) -> dict[str, Any]:
+        if not self.ready or not self._keypair:
+            raise RuntimeError("Live mode not configured — set SOLANA_PRIVATE_KEY and RPC")
+        lamports = int(max(sol, 0.001) * 1_000_000_000)
+        slippage_bps = int(self._settings.trade_slippage_pct * 100)
+        tip = int(self._settings.trade_priority_fee_sol * 1_000_000_000)
+        result = await jupiter_swap(
+            keypair=self._keypair,
+            rpc_url=self._settings.effective_rpc_url,
+            input_mint=SOL_MINT,
+            output_mint=mint,
+            amount_raw=lamports,
+            slippage_bps=slippage_bps,
+            priority_fee_lamports=tip,
+        )
+        result.update({"mint": mint, "action": "buy", "amount": sol, "mode": "jupiter"})
+        return result
+
     async def sell(self, mint: str, fraction: float = 1.0) -> dict[str, Any]:
         amount: float | str = f"{int(round(fraction * 100))}%"
         return await self._trade("sell", mint, amount, denominated_in_sol=False)
+
+    async def sell_for_venue(self, mint: str, fraction: float, venue: str | None) -> dict[str, Any]:
+        if is_pump_venue(venue):
+            out = await self.sell(mint, fraction)
+            out["venue_exec"] = "pumpportal"
+            return out
+        out = await self.jupiter_sell(mint, fraction)
+        out["venue_exec"] = "jupiter"
+        return out
+
+    async def jupiter_sell(self, mint: str, fraction: float = 1.0) -> dict[str, Any]:
+        if not self.ready or not self._keypair or not self.public_key:
+            raise RuntimeError("Live mode not configured — set SOLANA_PRIVATE_KEY and RPC")
+        balance = await get_token_balance_raw(self._settings.effective_rpc_url, self.public_key, mint)
+        if balance <= 0:
+            raise RuntimeError("No token balance to sell")
+        amount_raw = max(1, int(balance * max(0.0, min(1.0, fraction))))
+        slippage_bps = int(self._settings.trade_slippage_pct * 100)
+        tip = int(self._settings.trade_priority_fee_sol * 1_000_000_000)
+        result = await jupiter_swap(
+            keypair=self._keypair,
+            rpc_url=self._settings.effective_rpc_url,
+            input_mint=mint,
+            output_mint=SOL_MINT,
+            amount_raw=amount_raw,
+            slippage_bps=slippage_bps,
+            priority_fee_lamports=tip,
+        )
+        result.update(
+            {
+                "mint": mint,
+                "action": "sell",
+                "amount": fraction,
+                "mode": "jupiter",
+            }
+        )
+        return result
 
     async def _trade(
         self,

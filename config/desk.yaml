@@ -2,6 +2,7 @@
 
 fomo_copy_mode: true
 pump_launch_feed: false
+helius_wallet_watch: true
 cope_poll_sec: 20
 
 # Only these sources enter the agent pipeline when fomo_copy_mode is on

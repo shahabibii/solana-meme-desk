@@ -15,6 +15,7 @@ from orchestrator.copy_signals import CopyImprovementsConfig
 class DeskFeedConfig:
     fomo_copy_mode: bool = False
     pump_launch_feed: bool = True
+    helius_wallet_watch: bool = True
     cope_poll_sec: int = 60
     allowed_sources: frozenset[str] = frozenset({"copy", "convergence", "fomo"})
     entry_min_score_default: int = 72
@@ -150,6 +151,7 @@ def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
     return DeskFeedConfig(
         fomo_copy_mode=fomo_mode,
         pump_launch_feed=pump_feed,
+        helius_wallet_watch=bool(raw.get("helius_wallet_watch", True)),
         cope_poll_sec=int(raw.get("cope_poll_sec", 60)),
         allowed_sources=frozenset(str(s) for s in allowed),
         entry_min_score_default=default_score,

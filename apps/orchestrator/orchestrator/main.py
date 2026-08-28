@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -181,6 +181,8 @@ def _integrations() -> dict[str, Any]:
                 "hint": settings.effective_rpc_url.split("?")[0][:48],
             },
             "helius": {"active": flags["helius"]},
+            "helius_wallets": {"active": flags["helius_wallets"]},
+            "jupiter_exec": {"active": flags["jupiter_exec"]},
             "live_wallet": {
                 "active": flags["live_wallet"],
                 "ready": live_exec.ready,
@@ -421,6 +423,48 @@ async def arm_live_desk(body: ArmLiveBody) -> dict[str, Any]:
         "live_ready": live_exec.ready,
         "message": msg,
     }
+
+
+@app.post("/api/helius/webhook")
+async def helius_webhook(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    """Helius enhanced SWAP webhook — Jupiter, Raydium, Orca, etc."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    secret = settings.helius_webhook_secret or settings.sniper_ingest_secret
+    if secret:
+        expected = f"Bearer {secret}"
+        if authorization != expected:
+            raise HTTPException(401, detail="Invalid webhook authorization")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, detail="Invalid JSON body")
+    from orchestrator.feeds.helius_wallets import parse_helius_swap
+
+    events = body if isinstance(body, list) else [body]
+    watched = set(_desk._copy_wallets)
+    handled = 0
+    for raw in events:
+        if not isinstance(raw, dict):
+            continue
+        parsed = parse_helius_swap(raw, watched)
+        if not parsed:
+            continue
+        handled += 1
+        await _desk.on_helius_wallet_trade(parsed, _desk_mode)
+    return {"ok": True, "handled": handled}
+
+
+@app.post("/api/helius/sync-webhook")
+async def helius_sync_webhook() -> dict[str, Any]:
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    result = await _desk.sync_helius_webhook()
+    await _broadcast(status_snapshot(await _desk_status()))
+    return result
 
 
 @app.post("/api/desk/fomo-bootstrap")

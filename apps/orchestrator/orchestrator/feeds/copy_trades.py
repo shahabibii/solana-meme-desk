@@ -64,6 +64,8 @@ def parse_account_trade(raw: dict[str, Any], *, copy_boost: int = 25) -> MintCan
         meta={
             "trader": trader,
             "trader_sol": float(sol) if sol is not None else None,
+            "venue": "PUMP",
+            "via": "pumpportal",
             "trade_event": {k: raw[k] for k in list(raw.keys())[:16]},
         },
     )
