@@ -88,6 +88,7 @@ class DeskRuntime:
         self._copy_signals_enqueued = 0
         self._helius_webhook_state: dict | None = None
         self._helius_poller_seen: dict[str, set[str]] = {}
+        self._wallet_mint_cache: dict[str, set[str]] = {}
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
@@ -149,12 +150,48 @@ class DeskRuntime:
         """Handle Helius SWAP events from Jupiter, Raydium, Orca, etc."""
         from orchestrator.feeds.helius_wallets import swap_to_candidate
 
+        if event.get("fomo_relay"):
+            asyncio.create_task(self._resolve_fomo_relay(event, mode))
+            return
         if event.get("side") == "sell":
             await self.handle_copy_sell(event, mode)
             return
         cand = swap_to_candidate(event, copy_boost=self.copy_cfg.copy_boost)
         if cand:
             await self._on_copy_trade(cand)
+
+    async def _resolve_fomo_relay(self, event: dict, mode: DeskMode) -> None:
+        """fomo USDC relay: meme token arrives seconds later in wallet."""
+        from orchestrator.feeds.fomo_relay import wait_for_new_mints
+        from orchestrator.feeds.helius_wallets import swap_to_candidate
+
+        trader = str(event.get("trader") or "")
+        if not trader or not self.settings.helius_api_key:
+            return
+        known = self._wallet_mint_cache.setdefault(trader, set())
+        new_mints = await wait_for_new_mints(
+            self.settings.helius_api_key,
+            trader,
+            known=set(known),
+            retries=6,
+            delay_sec=3.5,
+        )
+        for mint, _amt in new_mints:
+            known.add(mint)
+            buy_event = {
+                "side": "buy",
+                "mint": mint,
+                "trader": trader,
+                "trader_sol": event.get("trader_sol"),
+                "trader_usdc": event.get("trader_usdc"),
+                "venue": "FOMO",
+                "via": "fomo_relay",
+                "signature": event.get("signature"),
+            }
+            cand = swap_to_candidate(buy_event, copy_boost=self.copy_cfg.copy_boost)
+            if cand:
+                cand.meta["trader_usdc"] = event.get("trader_usdc")
+                await self._on_copy_trade(cand)
 
     async def sync_helius_webhook(self) -> dict:
         from orchestrator.feeds.helius_wallets import sync_wallet_webhook
@@ -175,6 +212,53 @@ class DeskRuntime:
         )
         self._helius_webhook_state = result
         return result
+
+    async def backfill_fomo_relays(self, mode: DeskMode, *, minutes: int = 45) -> int:
+        """Resolve recent fomo USDC relays missed before relay parser existed."""
+        import time
+
+        import httpx
+
+        from orchestrator.feeds.fomo_relay import parse_fomo_usdc_relay
+        from orchestrator.feeds.helius_wallets import parse_helius_swap, swap_to_candidate
+
+        if not self.settings.helius_api_key:
+            return 0
+        watched = set(self._copy_wallets)
+        if not watched:
+            return 0
+        cutoff = time.time() - minutes * 60
+        resolved = 0
+        url_tpl = (
+            "https://api.helius.xyz/v0/addresses/{address}/transactions"
+            f"?api-key={self.settings.helius_api_key}&limit=20"
+        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for addr in self._copy_wallets:
+                try:
+                    resp = await client.get(url_tpl.format(address=addr))
+                    if resp.status_code != 200:
+                        continue
+                    for tx in resp.json():
+                        if not isinstance(tx, dict):
+                            continue
+                        ts = int(tx.get("timestamp") or 0)
+                        if ts and ts < cutoff:
+                            continue
+                        relay = parse_fomo_usdc_relay(tx, watched)
+                        if relay:
+                            await self.on_helius_wallet_trade(relay, mode)
+                            resolved += 1
+                            continue
+                        parsed = parse_helius_swap(tx, watched)
+                        if parsed and parsed.get("side") == "buy":
+                            cand = swap_to_candidate(parsed, copy_boost=self.copy_cfg.copy_boost)
+                            if cand:
+                                await self._on_copy_trade(cand)
+                                resolved += 1
+                except Exception:
+                    pass
+        return resolved
 
     async def handle_copy_sell(self, event: dict, mode: DeskMode) -> None:
         """Mirror exit when a watched wallet sells a token we hold."""
@@ -469,14 +553,19 @@ class DeskRuntime:
             if copy.boost:
                 candidate.copy_boost = max(candidate.copy_boost, copy.boost)
 
-            research = await run_research(
-                candidate,
-                cope_api_key=self.settings.cope_api_key,
-                openai_api_key=self.settings.openai_api_key,
-                llm_enabled=self.settings.research_llm_enabled,
-                safety_score=report.score,
-                openai_model=self.settings.openai_model,
-            )
+            if self.feed_cfg.fomo_copy_mode and candidate.source == "copy":
+                from orchestrator.agents.research import ResearchReport
+
+                research = ResearchReport(thesis="copy mirror", detail="copy_fast_path", ms=0)
+            else:
+                research = await run_research(
+                    candidate,
+                    cope_api_key=self.settings.cope_api_key,
+                    openai_api_key=self.settings.openai_api_key,
+                    llm_enabled=self.settings.research_llm_enabled,
+                    safety_score=report.score,
+                    openai_model=self.settings.openai_model,
+                )
             await self._agent_step("research", mint, research.verdict, research.ms, research.detail)
 
             weights = self.journal.get_weights()
@@ -833,6 +922,23 @@ async def start_desk(
     if feed_cfg.fomo_copy_mode:
         await desk.bootstrap_fomo_copy()
 
+    async def _fomo_relay_backfill() -> None:
+        import logging
+
+        from orchestrator.feeds.fomo_relay import wallet_mints_with_balance
+
+        log = logging.getLogger(__name__)
+        if settings.helius_api_key:
+            for addr in desk._copy_wallets:
+                holdings = await wallet_mints_with_balance(settings.helius_api_key, addr)
+                desk._wallet_mint_cache[addr] = set(holdings.keys())
+        try:
+            n = await desk.backfill_fomo_relays(get_mode(), minutes=60)
+            if n:
+                log.info("fomo relay backfill: %s signals", n)
+        except Exception as exc:
+            log.warning("fomo relay backfill failed: %s", exc)
+
     async def feed_heartbeat_loop() -> None:
         while running():
             if on_feed_heartbeat:
@@ -900,6 +1006,9 @@ async def start_desk(
         tasks.append(asyncio.create_task(_copy_listener()))
 
     if feed_cfg.helius_wallet_watch and settings.helius_api_key:
+        tasks.append(asyncio.create_task(_fomo_relay_backfill()))
+
+    if feed_cfg.helius_wallet_watch and settings.helius_api_key:
 
         async def _helius_poll_loop() -> None:
             from orchestrator.feeds.helius_poller import poll_wallet_trades
@@ -913,7 +1022,8 @@ async def start_desk(
                 on_trade=_on_polled,
                 seen=desk._helius_poller_seen,
                 running=running,
-                interval_sec=20.0,
+                interval_sec=12.0,
+                limit=25,
             )
 
         tasks.append(asyncio.create_task(_helius_poll_loop()))

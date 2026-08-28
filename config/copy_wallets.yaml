@@ -4,7 +4,7 @@
 
 copy:
   enabled: true
-  min_trader_sol: 0.02
+  min_trader_sol: 0.001
   copy_ratio: 0.25
   max_wallets: 20
   copy_boost: 25

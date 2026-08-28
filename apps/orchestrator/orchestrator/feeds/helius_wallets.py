@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from orchestrator.feeds.copy_filters import SOL_MINT, is_copyable_mint
+from orchestrator.feeds.fomo_relay import parse_fomo_usdc_relay
 from orchestrator.models import MintCandidate
 
 log = logging.getLogger(__name__)
@@ -164,16 +165,15 @@ def _parse_account_data(tx: dict[str, Any], watched: set[str]) -> dict[str, Any]
             mint = _mint_from_entry(tc)
             if not mint or mint == SOL_MINT:
                 continue
-            amt = _raw_amount(tc)
-            if amt <= 0:
-                continue
-            # Helius reports positive magnitudes; infer direction from SOL flow.
-            if native_change < 0:
+            raw = tc.get("rawTokenAmount") or {}
+            try:
+                amt = int(str(raw.get("tokenAmount") or "0"))
+            except (TypeError, ValueError):
+                amt = 0
+            if amt > 0:
                 bought_mint = mint
-            elif native_change > 0:
+            elif amt < 0:
                 sold_mint = mint
-            else:
-                bought_mint = mint
 
         sol_spent = max(0.0, -native_change / 1_000_000_000.0)
 
@@ -243,6 +243,10 @@ def _parse_token_flows(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] 
     return None
 
 
+def _parse_fomo_usdc_relay(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
+    return parse_fomo_usdc_relay(tx, watched)
+
+
 def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
     return _parse_token_flows(tx, watched)
 
@@ -260,7 +264,7 @@ def parse_helius_swap(
     if not watched:
         return None
 
-    for parser in (_parse_events_swap, _parse_token_flows, _parse_account_data):
+    for parser in (_parse_events_swap, _parse_token_flows, _parse_fomo_usdc_relay, _parse_account_data):
         parsed = parser(tx, watched)
         if parsed:
             return parsed

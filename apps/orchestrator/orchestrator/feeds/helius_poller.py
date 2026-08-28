@@ -23,8 +23,8 @@ async def poll_wallet_trades(
     on_trade: Callable[[dict[str, Any]], Awaitable[None]],
     seen: dict[str, set[str]],
     running: Callable[[], bool],
-    interval_sec: float = 25.0,
-    limit: int = 8,
+    interval_sec: float = 12.0,
+    limit: int = 25,
 ) -> None:
     """Poll recent txs per watched wallet; parse buys/sells webhooks may miss."""
     if not api_key:
