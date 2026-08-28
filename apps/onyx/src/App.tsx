@@ -599,6 +599,9 @@ export default function App() {
             />
             <OpsPanel
               integrations={desk.integrations}
+              sniperHealth={desk.sniperHealth}
+              fomoCopyMode={desk.fomoCopyMode}
+              copyWalletCount={desk.copyWalletCount}
               fills={desk.recentFills}
               onViewFills={() => setTradeDrawer(true)}
             />
