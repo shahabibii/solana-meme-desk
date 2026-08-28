@@ -43,7 +43,10 @@ async def list_wallet_tokens(rpc_url: str, owner: str) -> list[WalletToken]:
     }
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(rpc_url, json=payload)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception:
+            return []
     out: list[WalletToken] = []
     for item in (data.get("result") or {}).get("value") or []:
         pubkey = str(item.get("pubkey") or "")
@@ -81,46 +84,53 @@ async def estimate_entry_sol_for_mint(
         "method": "getSignaturesForAddress",
         "params": [owner, {"limit": 60}],
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        sig_resp = await client.post(rpc_url, json=payload)
-        sigs = [row["signature"] for row in (sig_resp.json().get("result") or [])]
-        for sig in reversed(sigs):
-            tx_payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getTransaction",
-                "params": [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
-            }
-            tx_resp = await client.post(rpc_url, json=tx_payload)
-            tx = tx_resp.json().get("result")
-            if not tx or (tx.get("meta") or {}).get("err"):
-                continue
-            meta = tx["meta"]
-            keys = [
-                a.get("pubkey") if isinstance(a, dict) else str(a)
-                for a in tx["transaction"]["message"]["accountKeys"]
-            ]
-            if owner not in keys:
-                continue
-            idx = keys.index(owner)
-            delta = (meta["postBalances"][idx] - meta["preBalances"][idx]) / 1e9
-            pre = {
-                t["mint"]: float((t.get("uiTokenAmount") or {}).get("uiAmount") or 0)
-                for t in meta.get("preTokenBalances") or []
-                if t.get("owner") == owner
-            }
-            post = {
-                t["mint"]: float((t.get("uiTokenAmount") or {}).get("uiAmount") or 0)
-                for t in meta.get("postTokenBalances") or []
-                if t.get("owner") == owner
-            }
-            mints = set(pre) | set(post)
-            got_mint = any(m == mint and post.get(m, 0) > pre.get(m, 0) for m in mints)
-            if got_mint and delta < -0.01:
-                spent += abs(delta)
-                bt = tx.get("blockTime")
-                if bt:
-                    first_ts = first_ts or datetime.fromtimestamp(bt, tz=timezone.utc)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            sig_resp = await client.post(rpc_url, json=payload)
+            sig_data = sig_resp.json()
+            sigs = [row["signature"] for row in (sig_data.get("result") or [])]
+            for sig in reversed(sigs):
+                tx_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
+                }
+                tx_resp = await client.post(rpc_url, json=tx_payload)
+                try:
+                    tx = tx_resp.json().get("result")
+                except Exception:
+                    continue
+                if not tx or (tx.get("meta") or {}).get("err"):
+                    continue
+                meta = tx["meta"]
+                keys = [
+                    a.get("pubkey") if isinstance(a, dict) else str(a)
+                    for a in tx["transaction"]["message"]["accountKeys"]
+                ]
+                if owner not in keys:
+                    continue
+                idx = keys.index(owner)
+                delta = (meta["postBalances"][idx] - meta["preBalances"][idx]) / 1e9
+                pre = {
+                    t["mint"]: float((t.get("uiTokenAmount") or {}).get("uiAmount") or 0)
+                    for t in meta.get("preTokenBalances") or []
+                    if t.get("owner") == owner
+                }
+                post = {
+                    t["mint"]: float((t.get("uiTokenAmount") or {}).get("uiAmount") or 0)
+                    for t in meta.get("postTokenBalances") or []
+                    if t.get("owner") == owner
+                }
+                mints = set(pre) | set(post)
+                got_mint = any(m == mint and post.get(m, 0) > pre.get(m, 0) for m in mints)
+                if got_mint and delta < -0.01:
+                    spent += abs(delta)
+                    bt = tx.get("blockTime")
+                    if bt:
+                        first_ts = first_ts or datetime.fromtimestamp(bt, tz=timezone.utc)
+    except Exception:
+        return default, first_ts
     if spent <= 0:
         return default, first_ts
     return spent, first_ts
@@ -169,7 +179,11 @@ async def burn_and_close_token_account(
                 "params": [{"commitment": "finalized"}],
             },
         )
-        bh = (bh_resp.json().get("result") or {}).get("value", {}).get("blockhash")
+        try:
+            bh_data = bh_resp.json()
+        except Exception as exc:
+            raise RuntimeError(f"blockhash response invalid: {exc}") from exc
+        bh = (bh_data.get("result") or {}).get("value", {}).get("blockhash")
         if not bh:
             raise RuntimeError("Could not fetch blockhash")
         msg = Message.new_with_blockhash([burn_ix, close_ix], owner, Hash.from_string(bh))

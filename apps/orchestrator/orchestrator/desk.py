@@ -131,42 +131,29 @@ class DeskRuntime:
             if token.mint in self._live_tracks:
                 continue
 
-            entry_sol, entry_ts = await estimate_entry_sol_for_mint(rpc, owner, token.mint)
-            price, _ = await mark_price_usd(token.mint)
-            symbol = token.mint[:6].upper()
-            if price:
-                try:
-                    import httpx
-
-                    async with httpx.AsyncClient(timeout=8.0) as client:
-                        resp = await client.get(
-                            f"https://api.dexscreener.com/latest/dex/tokens/{token.mint}"
-                        )
-                        pairs = (resp.json().get("pairs") or []) if resp.status_code == 200 else []
-                        if pairs:
-                            symbol = str(
-                                (pairs[0].get("baseToken") or {}).get("symbol") or symbol
-                            )[:12]
-                except Exception:
-                    pass
-
-            self._live_tracks[token.mint] = {
-                "symbol": symbol,
-                "entry_sol": round(entry_sol, 4),
-                "entry_ts": entry_ts or datetime.now(timezone.utc),
-                "source": "import",
-                "venue": "jupiter",
-                "peak_pnl_pct": 0.0,
-                "entry_price": price or 0.0001,
-                "tp_hit": set(),
-            }
-            imported += 1
-            log.info(
-                "imported live position %s (%s) entry_sol=%.4f",
-                symbol,
-                token.mint[:12],
-                entry_sol,
-            )
+            try:
+                entry_sol, entry_ts = await estimate_entry_sol_for_mint(rpc, owner, token.mint)
+                price, _ = await mark_price_usd(token.mint)
+                symbol = token.mint[:6].upper()
+                self._live_tracks[token.mint] = {
+                    "symbol": symbol,
+                    "entry_sol": round(entry_sol, 4),
+                    "entry_ts": entry_ts or datetime.now(timezone.utc),
+                    "source": "import",
+                    "venue": "jupiter",
+                    "peak_pnl_pct": 0.0,
+                    "entry_price": price or 0.0001,
+                    "tp_hit": set(),
+                }
+                imported += 1
+                log.info(
+                    "imported live position %s (%s) entry_sol=%.4f",
+                    symbol,
+                    token.mint[:12],
+                    entry_sol,
+                )
+            except Exception as exc:
+                log.warning("import %s failed: %s", token.mint[:12], exc)
 
         self._save_live_tracks()
         return {

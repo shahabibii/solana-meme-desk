@@ -39,10 +39,11 @@ primary_region = "iad"
   cpu_kind = "shared"
   cpus = 1
 
-[mounts]
-  source = "desk_data"
-  destination = "/data"
-  initial_size = "1gb"
+# Persistent data — attach after machine is in the same zone as the volume.
+# [mounts]
+#   source = "desk_data"
+#   destination = "/data"
+#   initial_size = "1gb"
 
 # Scale sniper after deploy (needs HELIUS_API_KEY secret):
 #   fly secrets set HELIUS_API_KEY=... SNIPER_INGEST_SECRET=...
