@@ -4,7 +4,7 @@ const KEYS = [
   "helius",
   "pumpportal",
   "solana_rpc",
-  "cope_fomo",
+  "copy_trading",
   "live_wallet",
   "jito",
   "sniper",

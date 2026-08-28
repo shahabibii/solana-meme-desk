@@ -248,7 +248,6 @@ class DeskRuntime:
         handle = self.settings.fomo_handle
         handles = list(self.fomo_follows.handles)
         seeded = 0
-        cope_error: str | None = None
 
         if self.cope.enabled:
             if handle:
@@ -259,7 +258,6 @@ class DeskRuntime:
             for c in await self.cope.poll_candidates():
                 await self.enqueue(c)
                 seeded += 1
-            cope_error = self.cope.last_error
 
         wallets = await self.refresh_copy_wallets()
         manual_ok = len(wallets) > 0
@@ -274,8 +272,6 @@ class DeskRuntime:
             "follows": handles,
             "copy_watchlist": self._copy_watchlist(),
             "manual_wallets_active": manual_ok,
-            "cope_offline": bool(cope_error and manual_ok),
-            "cope_error": cope_error if not manual_ok else None,
         }
 
     def _copy_watchlist(self) -> list[dict[str, str]]:
@@ -308,7 +304,6 @@ class DeskRuntime:
                 "configured_wallets": len(self.copy_cfg.wallets),
                 "copy_watchlist": watchlist,
                 "manual_wallets_active": len(self._copy_wallets) > 0,
-                "cope_error": self.cope.last_error if not self._copy_wallets else None,
                 "mirror_sell": bool(
                     self.feed_cfg.copy_improvements and self.feed_cfg.copy_improvements.mirror_sell_enabled
                 ),

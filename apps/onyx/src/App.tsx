@@ -468,26 +468,9 @@ export default function App() {
           const r = await bootstrapFomoCopy();
           desk.applyStatus(await fetchStatus());
           const walletCount = Number(r.wallets ?? desk.copyWalletCount ?? 0);
-          const err =
-            (r.cope_error as string | undefined) ||
-            ((r.sync as { error?: string } | undefined)?.error);
-          if (walletCount > 0) {
-            notify(
-              r.cope_offline
-                ? `${walletCount} wallets watching. Cope is offline — manual list is active.`
-                : `Fomo sync: ${walletCount} wallets, ${Number(r.seeded_candidates ?? 0)} candidates`
-            );
-            return;
-          }
-          if (err) {
-            notify(
-              `Fomo sync failed: ${err}. Paste wallet addresses manually or try again when Cope is back.`
-            );
-            return;
-          }
-          notify(`Fomo sync: ${Number(r.handles ?? 0)} follows, 0 wallets resolved`);
+          notify(`${walletCount} wallets in watchlist`);
         } catch (e) {
-          notify(e instanceof Error ? e.message : "Fomo sync failed");
+          notify(e instanceof Error ? e.message : "Refresh failed");
         } finally {
           setModeBusy(false);
         }
@@ -558,9 +541,7 @@ export default function App() {
           onCopyPubkey={copyPubkey}
           fomoCopyMode={desk.fomoCopyMode}
           copyWalletCount={desk.copyWalletCount}
-          fomoFollowCount={desk.fomoFollowCount}
           copyWatchlist={desk.copyWatchlist}
-          copeReachable={desk.copeReachable}
         />
 
         <HeaderBar
@@ -641,13 +622,6 @@ export default function App() {
         </p>
       )}
 
-      {desk.fomoCopyMode && desk.copeReachable === false && desk.copyWalletCount > 0 && (
-        <p className="mode-banner cope-banner" role="status">
-          Cope offline — {desk.copyWalletCount} wallets watching via PumpPortal. Sync Fomo is
-          optional until Cope returns.
-        </p>
-      )}
-
       {liveConfirm && (
         <div className="modal-backdrop" role="presentation">
           <div className="modal p" role="dialog" aria-labelledby="live-title">
@@ -658,8 +632,9 @@ export default function App() {
             </div>
             <h2 id="live-title">Arm LIVE &amp; run?</h2>
             <p>
-              Real PumpPortal orders with your wallet. The desk keeps running on the server — you
-              can close this browser.
+              {desk.fomoCopyMode
+                ? `Real SOL copy-trades from your ${desk.copyWalletCount} watched wallets (max 0.05 ◎ per position). The desk keeps running on the server — you can close this browser.`
+                : "Real PumpPortal orders with your wallet. The desk keeps running on the server — you can close this browser."}
             </p>
             <div className="modal-actions">
               <button type="button" className="cmd" onClick={() => setLiveConfirm(false)}>

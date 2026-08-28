@@ -31,11 +31,7 @@ paper_book = PaperBook.new(settings.paper_starting_sol, load_risk_limits(setting
 live_exec = LiveExecutor(settings)
 _controls = DeskControls(settings.data_dir, default_mode=settings.desk_mode.value)
 _feed_cfg_boot = load_desk_feed_config(settings.config_dir)
-if _feed_cfg_boot.fomo_copy_mode or settings.fomo_copy_mode:
-    _controls.set_mode("paper")
-    _desk_mode = DeskMode.PAPER
-else:
-    _desk_mode = DeskMode(_controls.initial_mode(live_exec.ready))
+_desk_mode = DeskMode(_controls.initial_mode(live_exec.ready))
 _ws_clients: set[WebSocket] = set()
 _tasks: list[asyncio.Task] = []
 _running = True
@@ -68,9 +64,7 @@ def get_mode() -> DeskMode:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _tasks, _running, _desk, _desk_mode
-    if _feed_cfg_boot.fomo_copy_mode or settings.fomo_copy_mode:
-        _desk_mode = DeskMode.PAPER
-        _controls.set_mode("paper")
+    _desk_mode = DeskMode(_controls.initial_mode(live_exec.ready))
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     journal.record_equity(paper_book.equity_sol)
     _desk, _tasks = await start_desk(
@@ -149,8 +143,6 @@ def _setup_checklist() -> dict[str, Any]:
     missing = []
     if not flags["pumpportal_key"]:
         missing.append("PUMPPORTAL_API_KEY — required for wallet copy-trading stream")
-    if fomo_copy and not flags["cope_fomo"]:
-        missing.append("COPE_API_KEY — required for Fomo Copy Mode signals")
     if not flags["elevenlabs_tts"]:
         missing.append("ELEVENLABS_API_KEY — optional Maisie voice")
     if not flags["research_llm"]:
@@ -164,16 +156,16 @@ def _setup_checklist() -> dict[str, Any]:
     if wallets == 0:
         if fomo_copy and manual:
             missing.append(
-                f"Cope API offline — {manual} fomo follows configured; signals resume when Cope reconnects"
+                f"{manual} follows configured — add wallet addresses to start copy-trading"
             )
         elif fomo_copy:
-            missing.append("Fomo sync — POST /api/desk/fomo-bootstrap or /api/fomo/sync")
+            missing.append("Add copy wallet addresses in config or POST /api/copy/wallets")
         elif not flags["pumpportal_key"]:
-            missing.append("copy_wallets.yaml or Cope top-trader poll — no mirror wallets yet")
+            missing.append("copy_wallets.yaml — no mirror wallets yet")
     return {
         "fomo_copy_mode": fomo_copy,
         "ready_for_copy_trading": flags["pumpportal_key"] and wallets > 0,
-        "ready_for_live": live_exec.ready and not fomo_copy,
+        "ready_for_live": live_exec.ready,
         "paused": _controls.paused,
         "copy_wallets": wallets,
         "missing": missing,
@@ -198,8 +190,8 @@ def _integrations() -> dict[str, Any]:
             "pumpportal_key": {"active": flags["pumpportal_key"]},
             "pumpportal_stream": {"active": True},
             "copy_trading": {
-                "active": bool(flags["pumpportal_key"] and settings.cope_api_key),
-                "requires": "PUMPPORTAL_API_KEY + COPE_API_KEY or copy_wallets.yaml",
+                "active": bool(flags["pumpportal_key"]),
+                "requires": "PUMPPORTAL_API_KEY + copy wallet addresses",
             },
             "jito": {
                 "active": flags["jito"],
@@ -266,7 +258,6 @@ async def _desk_status() -> dict[str, Any]:
     if _desk:
         base["wallet"] = await _desk.wallet_snapshot(_desk_mode)
         base.update(_desk.status_extra())
-        base["cope_health"] = await _desk.cope.health()
         base["fomo_follow_handles"] = list(_desk.fomo_follows.handles)
     base["sniper_health"] = _sniper_health.snapshot()
     return base
@@ -400,11 +391,6 @@ async def resume_desk() -> dict[str, Any]:
 async def arm_live_desk(body: ArmLiveBody) -> dict[str, Any]:
     """Arm LIVE, unpause, and persist — safe to close the browser after this."""
     global _desk_mode
-    if _desk and _desk.feed_cfg.fomo_copy_mode:
-        raise HTTPException(
-            400,
-            detail="Fomo Copy Mode is paper-only — set fomo_copy_mode=false to arm LIVE",
-        )
     if not body.confirm:
         raise HTTPException(400, detail="Arm LIVE requires confirm=true")
     if not live_exec.ready:
@@ -603,11 +589,6 @@ def get_desk_mode() -> dict[str, Any]:
 async def set_desk_mode(body: ModeBody) -> dict[str, Any]:
     global _desk_mode
     if body.mode == DeskMode.LIVE:
-        if _desk and _desk.feed_cfg.fomo_copy_mode:
-            raise HTTPException(
-                400,
-                detail="Fomo Copy Mode is paper-only — set fomo_copy_mode=false first",
-            )
         if not body.confirm:
             raise HTTPException(400, detail="Switching to LIVE requires confirm=true")
         if not live_exec.ready:

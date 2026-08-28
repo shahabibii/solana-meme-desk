@@ -30,9 +30,7 @@ export default function Sidebar({
   onCopyPubkey,
   fomoCopyMode,
   copyWalletCount,
-  fomoFollowCount,
   copyWatchlist,
-  copeReachable,
 }: {
   equitySol: number;
   cashSol: number;
@@ -51,9 +49,7 @@ export default function Sidebar({
   onCopyPubkey: () => void;
   fomoCopyMode?: boolean;
   copyWalletCount?: number;
-  fomoFollowCount?: number;
   copyWatchlist?: { handle: string; wallet: string; wallet_short: string }[];
-  copeReachable?: boolean | null;
 }) {
   const waveRef = useRef<HTMLCanvasElement>(null);
   useWaveform(waveRef, listening || voiceActive, "#7BE8FF", 0.14);
@@ -173,23 +169,12 @@ export default function Sidebar({
           {paused && <span className="dot warn" style={{ width: 5, height: 5 }} />}
         </div>
         <div className="cmds">
-          {fomoCopyMode && (
-            <button type="button" className="cmd" onClick={() => onCommand("fomo_sync")}>
-              Sync Fomo
-            </button>
-          )}
           <button
             type="button"
             className="cmd live"
-            disabled={modeBusy || !liveReady || fomoCopyMode}
+            disabled={modeBusy || !liveReady}
             onClick={() => onCommand("arm_live")}
-            title={
-              fomoCopyMode
-                ? "Fomo Copy Mode is paper-only"
-                : !liveReady
-                  ? "Fund live wallet first"
-                  : "Arm LIVE and keep running on server"
-            }
+            title={!liveReady ? "Fund live wallet first" : "Arm LIVE and keep running on server"}
           >
             Arm LIVE & Run
           </button>
@@ -204,9 +189,9 @@ export default function Sidebar({
         </div>
         <p className="deskctl-hint">
           {fomoCopyMode
-            ? copeReachable === false
-              ? `${copyWalletCount ?? 0} wallets loaded · Cope offline`
-              : `Fomo Copy · ${copyWalletCount ?? 0} wallets · paper only`
+            ? mode === "live"
+              ? `Fomo Copy · LIVE · ${copyWalletCount ?? 0} wallets`
+              : `Fomo Copy · ${copyWalletCount ?? 0} wallets · paper until you arm LIVE`
             : paused
               ? "Stopped — no new buys. Exits still run."
               : mode === "live"
@@ -229,11 +214,6 @@ export default function Sidebar({
               <span className="mut">{w.wallet_short}</span>
             </div>
           ))}
-          {copeReachable === false && (
-            <p className="deskctl-hint" style={{ marginTop: 6 }}>
-              Manual wallets active — Sync Fomo optional while Cope is down.
-            </p>
-          )}
         </div>
       )}
 
