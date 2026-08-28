@@ -10,19 +10,23 @@ export default function HeaderBar({
   connected,
   mode,
   liveReady,
+  paused,
   pubkey,
   modeBusy,
   onPaper,
   onLiveRequest,
+  onStop,
   onCopyPubkey,
 }: {
   connected: boolean;
   mode: DeskMode;
   liveReady: boolean;
+  paused: boolean;
   pubkey: string | null;
   modeBusy: boolean;
   onPaper: () => void;
   onLiveRequest: () => void;
+  onStop: () => void;
   onCopyPubkey: () => void;
 }) {
   const [clock, setClock] = useState("00:00:00");
@@ -37,7 +41,7 @@ export default function HeaderBar({
           minute: "2-digit",
           second: "2-digit",
           hour12: true,
-        }),
+        })
       );
       setDateTxt(d.toDateString().toUpperCase());
     };
@@ -70,6 +74,22 @@ export default function HeaderBar({
         <div className="c">{clock}</div>
       </div>
       <div className="sp" />
+      {paused && (
+        <div className="statchip paused">
+          <span className="dot warn" />
+          STOPPED
+        </div>
+      )}
+      {!paused && mode === "live" && (
+        <button
+          type="button"
+          className="stop-btn"
+          disabled={modeBusy}
+          onClick={onStop}
+        >
+          STOP
+        </button>
+      )}
       <div
         className={`mode-toggle ${mode === "live" ? "live" : ""}`}
         onClick={toggleMode}

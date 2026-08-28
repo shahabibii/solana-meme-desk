@@ -18,6 +18,9 @@ export default function Sidebar({
   onChainSol,
   pubkey,
   liveReady,
+  mode,
+  paused,
+  modeBusy,
   positionsCount,
   weights,
   listening,
@@ -31,6 +34,9 @@ export default function Sidebar({
   onChainSol: number | null;
   pubkey: string | null;
   liveReady: boolean;
+  mode: "paper" | "live";
+  paused: boolean;
+  modeBusy: boolean;
   positionsCount: number;
   weights: Record<string, number>;
   listening: boolean;
@@ -147,6 +153,41 @@ export default function Sidebar({
             {v.toFixed(2).replace(/^0/, "")}
           </div>
         ))}
+      </div>
+
+      <div className="sidecard">
+        <div className="ct">
+          <i />
+          Desk Control
+          <span className="tail" />
+          {paused && <span className="dot warn" style={{ width: 5, height: 5 }} />}
+        </div>
+        <div className="cmds">
+          <button
+            type="button"
+            className="cmd live"
+            disabled={modeBusy || !liveReady}
+            onClick={() => onCommand("arm_live")}
+            title={!liveReady ? "Fund live wallet first" : "Arm LIVE and keep running on server"}
+          >
+            Arm LIVE & Run
+          </button>
+          <button
+            type="button"
+            className={`cmd ${paused ? "" : "stop"}`}
+            disabled={modeBusy}
+            onClick={() => onCommand(paused ? "resume" : "stop")}
+          >
+            {paused ? "Resume" : "Stop"}
+          </button>
+        </div>
+        <p className="deskctl-hint">
+          {paused
+            ? "Stopped — no new buys. Exits still run."
+            : mode === "live"
+              ? "Live on server — close browser anytime."
+              : "Arms live + runs 24/7 on Fly."}
+        </p>
       </div>
 
       <div className="sidecard">

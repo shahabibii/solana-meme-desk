@@ -47,6 +47,36 @@ export async function setDeskPaused(paused: boolean): Promise<{ paused: boolean;
   return r.json();
 }
 
+export async function stopDesk(): Promise<{ paused: boolean; message: string }> {
+  const r = await fetch(API.deskStop, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function resumeDesk(): Promise<{ paused: boolean; message: string }> {
+  const r = await fetch(API.deskResume, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function armLiveDesk(): Promise<{
+  mode: DeskMode;
+  paused: boolean;
+  message: string;
+  live_ready: boolean;
+}> {
+  const r = await fetch(API.deskArmLive, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
 export async function refreshCopyWallets(): Promise<{ count: number; wallets: string[] }> {
   const r = await fetch(API.copyRefresh, { method: "POST" });
   if (!r.ok) throw new Error(await r.text());

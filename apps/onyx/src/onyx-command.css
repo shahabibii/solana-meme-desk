@@ -236,6 +236,19 @@ body{background:var(--bg);color:var(--txt);font-family:var(--body);overflow:hidd
   background:linear-gradient(90deg,transparent,rgba(224,204,245,.15),transparent);transition:.4s}
 .cmd:hover{border-color:var(--line-hi);color:var(--lav);box-shadow:0 0 12px rgba(176,154,208,.2)}
 .cmd:hover::after{left:140%}
+.cmd.live{color:var(--amber);border-color:rgba(255,181,102,.45)}
+.cmd.live:hover:not(:disabled){box-shadow:0 0 14px rgba(255,181,102,.25)}
+.cmd.stop{color:var(--pink);border-color:rgba(255,107,158,.45)}
+.cmd.stop:hover:not(:disabled){box-shadow:0 0 14px rgba(255,107,158,.25)}
+.cmd:disabled{opacity:.45;cursor:not-allowed}
+.deskctl-hint{font-family:var(--mono);font-size:8px;color:var(--dim);letter-spacing:.5px;
+  margin:6px 2px 0;line-height:1.35;text-align:center}
+.statchip.paused{border-color:rgba(255,107,158,.45);color:var(--pink)}
+.stop-btn{font-family:var(--disp);font-size:8px;letter-spacing:2px;padding:4px 12px;
+  border:1px solid rgba(255,107,158,.55);border-radius:6px;background:rgba(255,107,158,.12);
+  color:var(--pink);cursor:pointer;transition:.2s}
+.stop-btn:hover:not(:disabled){box-shadow:0 0 14px rgba(255,107,158,.3)}
+.stop-btn:disabled{opacity:.45;cursor:not-allowed}
 .rf{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:6px;padding:4px 9px;
   margin-bottom:4px;font-family:var(--mono);font-size:10px;background:rgba(7,5,16,.4);animation:evin .3s ease}
 .rf .sy{font-family:var(--disp);font-size:9px;letter-spacing:1px;color:var(--lav)}

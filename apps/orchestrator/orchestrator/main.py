@@ -28,13 +28,13 @@ from orchestrator.ws.events import mode_changed, status_snapshot
 journal = JournalStore(settings.data_dir / "desk.db")
 paper_book = PaperBook.new(settings.paper_starting_sol, load_risk_limits(settings.config_dir))
 live_exec = LiveExecutor(settings)
-_desk_mode = settings.desk_mode
+_controls = DeskControls(settings.data_dir, default_mode=settings.desk_mode.value)
+_desk_mode = DeskMode(_controls.initial_mode(live_exec.ready))
 _ws_clients: set[WebSocket] = set()
 _tasks: list[asyncio.Task] = []
 _running = True
 _desk: DeskRuntime | None = None
 _sniper_health = SniperHealthStore()
-_controls = DeskControls(settings.data_dir)
 
 
 async def _alert(message: str) -> None:
@@ -117,6 +117,10 @@ class HeartbeatBody(BaseModel):
 
 class PauseBody(BaseModel):
     paused: bool
+
+
+class ArmLiveBody(BaseModel):
+    confirm: bool = False
 
 
 class CopyWalletsBody(BaseModel):
@@ -352,6 +356,53 @@ async def set_desk_pause(body: PauseBody) -> dict[str, Any]:
     return {"paused": _controls.paused, "message": msg}
 
 
+@app.post("/api/desk/stop")
+async def stop_desk() -> dict[str, Any]:
+    """Kill switch — pause new entries (persists across restarts)."""
+    return await set_desk_pause(PauseBody(paused=True))
+
+
+@app.post("/api/desk/resume")
+async def resume_desk() -> dict[str, Any]:
+    return await set_desk_pause(PauseBody(paused=False))
+
+
+@app.post("/api/desk/arm-live")
+async def arm_live_desk(body: ArmLiveBody) -> dict[str, Any]:
+    """Arm LIVE, unpause, and persist — safe to close the browser after this."""
+    global _desk_mode
+    if not body.confirm:
+        raise HTTPException(400, detail="Arm LIVE requires confirm=true")
+    if not live_exec.ready:
+        raise HTTPException(
+            400,
+            detail="Live not configured — fund wallet and set SOLANA_PRIVATE_KEY",
+        )
+    _desk_mode = DeskMode.LIVE
+    _controls.set_mode(DeskMode.LIVE.value)
+    _controls.set_paused(False)
+    msg = "LIVE armed — desk running. New entries enabled."
+    if settings.alert_webhook_url:
+        await _alert(msg)
+    await _broadcast(mode_changed(_desk_mode.value))
+    wallet = await _desk.wallet_snapshot(_desk_mode) if _desk else paper_book.to_dict()
+    snap = status_snapshot(
+        {
+            "mode": _desk_mode.value,
+            "paused": False,
+            "wallet": wallet,
+            "setup": _setup_checklist(),
+        }
+    )
+    await _broadcast(snap)
+    return {
+        "mode": _desk_mode.value,
+        "paused": False,
+        "live_ready": live_exec.ready,
+        "message": msg,
+    }
+
+
 @app.post("/api/copy/refresh")
 async def refresh_copy_wallets() -> dict[str, Any]:
     if not _desk:
@@ -441,10 +492,24 @@ async def chat(body: ChatBody) -> dict[str, str]:
     if "integration" in lower or "keys" in lower:
         active = [k for k, v in st["integrations"].items() if v.get("active")]
         return {"reply": f"Active integrations: {', '.join(active) or 'RPC only'}."}
+    if "stop" in lower or ("pause" in lower and "unpause" not in lower):
+        await set_desk_pause(PauseBody(paused=True))
+        return {"reply": "Desk stopped — no new entries. Open positions still monitored."}
+    if "resume" in lower or "unpause" in lower or "run" in lower:
+        await set_desk_pause(PauseBody(paused=False))
+        return {"reply": f"Desk resumed in {st['mode'].upper()} mode."}
+    if "arm" in lower and "live" in lower:
+        if not live_exec.ready:
+            return {"reply": "Wallet not ready — fund your live pubkey first."}
+        return {
+            "reply": "Use Arm LIVE & Run in the sidebar, or POST /api/desk/arm-live with confirm=true."
+        }
     if "live" in lower:
         if live_exec.ready:
-            return {"reply": "Live executor ready. Toggle Live in the header with confirmation."}
-        return {"reply": "Set SOLANA_PRIVATE_KEY and SOLANA_RPC_URL (or HELIUS_API_KEY) in .env."}
+            return {
+                "reply": "Live ready. Tap Arm LIVE & Run (sidebar) or toggle LIVE in the header."
+            }
+        return {"reply": "Set SOLANA_PRIVATE_KEY and fund the wallet on-chain."}
     if "paper" in lower:
         return {"reply": "Paper mode simulates bonding-curve fills with full safety and journal."}
     if "block" in lower:
@@ -467,7 +532,7 @@ async def chat(body: ChatBody) -> dict[str, str]:
                 else "No closed trades yet for backtest."
             )
         }
-    return {"reply": "Ask: status, keys, live, paper, blocks, backtest."}
+    return {"reply": "Ask: status, keys, live, paper, blocks, backtest, stop, resume."}
 
 
 @app.get("/api/mode")
@@ -491,6 +556,7 @@ async def set_desk_mode(body: ModeBody) -> dict[str, Any]:
                 detail="Live not configured — set SOLANA_PRIVATE_KEY in orchestrator .env",
             )
     _desk_mode = body.mode
+    _controls.set_mode(_desk_mode.value)
     await _broadcast(mode_changed(_desk_mode.value))
     wallet = await _desk.wallet_snapshot(_desk_mode) if _desk else paper_book.to_dict()
     await _broadcast(status_snapshot({"mode": _desk_mode.value, "wallet": wallet}))

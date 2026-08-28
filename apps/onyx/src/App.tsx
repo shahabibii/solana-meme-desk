@@ -9,6 +9,9 @@ import {
   runBacktest,
   runLearner,
   setMode,
+  armLiveDesk,
+  stopDesk,
+  resumeDesk,
 } from "./api";
 import { BLOCK_SPEAK_THROTTLE_MS, POLL_MS } from "./config";
 import { useDesk, type FeedItem } from "./store";
@@ -242,6 +245,76 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function armLiveAndRun() {
+    setModeError(null);
+    if (!desk.liveReady) {
+      setModeError("WALLET NOT READY");
+      notify("Wallet not ready — fund your live wallet first.");
+      return;
+    }
+    if (desk.mode === "live" && !desk.paused) {
+      notify("Already LIVE and running. Close the browser anytime.");
+      return;
+    }
+    if (desk.mode === "live" && desk.paused) {
+      setModeBusy(true);
+      try {
+        const r = await resumeDesk();
+        desk.applyStatus(await fetchStatus());
+        notify(r.message);
+      } catch (e) {
+        setModeError(e instanceof Error ? e.message : "Resume failed");
+      } finally {
+        setModeBusy(false);
+      }
+      return;
+    }
+    setLiveConfirm(true);
+  }
+
+  async function confirmArmLive() {
+    setModeError(null);
+    setModeBusy(true);
+    try {
+      const r = await armLiveDesk();
+      desk.setMode(r.mode);
+      desk.applyStatus(await fetchStatus());
+      setLastReply(r.message);
+      say(r.message);
+    } catch (e) {
+      setModeError(e instanceof Error ? e.message : "Arm LIVE failed");
+    } finally {
+      setModeBusy(false);
+      setLiveConfirm(false);
+    }
+  }
+
+  async function stopTrading() {
+    setModeBusy(true);
+    try {
+      const r = await stopDesk();
+      desk.applyStatus(await fetchStatus());
+      notify(r.message);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Stop failed");
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
+  async function resumeTrading() {
+    setModeBusy(true);
+    try {
+      const r = await resumeDesk();
+      desk.applyStatus(await fetchStatus());
+      notify(r.message);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Resume failed");
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
   async function applyMode(next: "paper" | "live") {
     setModeError(null);
     if (next === "live" && !desk.liveReady) {
@@ -379,6 +452,15 @@ export default function App() {
         notify(reply);
         return;
       }
+      case "arm_live":
+        await armLiveAndRun();
+        return;
+      case "stop":
+        await stopTrading();
+        return;
+      case "resume":
+        await resumeTrading();
+        return;
       default:
         void handleChat(cmd);
     }
@@ -428,6 +510,9 @@ export default function App() {
           onChainSol={desk.onChainSol}
           pubkey={desk.walletPubkey}
           liveReady={desk.liveReady}
+          mode={desk.mode}
+          paused={desk.paused}
+          modeBusy={modeBusy}
           positionsCount={desk.positions.length}
           weights={desk.learnerWeights}
           listening={listening}
@@ -441,10 +526,12 @@ export default function App() {
           connected={desk.connected}
           mode={desk.mode}
           liveReady={desk.liveReady}
+          paused={desk.paused}
           pubkey={desk.walletPubkey}
           modeBusy={modeBusy}
           onPaper={() => void applyMode("paper")}
-          onLiveRequest={() => setLiveConfirm(true)}
+          onLiveRequest={() => void armLiveAndRun()}
+          onStop={() => void stopTrading()}
           onCopyPubkey={copyPubkey}
         />
 
@@ -520,8 +607,11 @@ export default function App() {
               Confirm Live
               <span className="tail" />
             </div>
-            <h2 id="live-title">Arm live execution?</h2>
-            <p>Real PumpPortal orders. SOL is at risk.</p>
+            <h2 id="live-title">Arm LIVE &amp; run?</h2>
+            <p>
+              Real PumpPortal orders with your wallet. The desk keeps running on the server — you
+              can close this browser.
+            </p>
             <div className="modal-actions">
               <button type="button" className="cmd" onClick={() => setLiveConfirm(false)}>
                 Cancel
@@ -529,10 +619,10 @@ export default function App() {
               <button
                 type="button"
                 className="cmd primary"
-                onClick={() => void applyMode("live")}
+                onClick={() => void confirmArmLive()}
                 disabled={modeBusy}
               >
-                Arm LIVE
+                Arm LIVE &amp; Run
               </button>
             </div>
           </div>
