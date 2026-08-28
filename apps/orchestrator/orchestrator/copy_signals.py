@@ -13,6 +13,7 @@ MintStatus = Literal["processing", "filled", "blocked", "skipped"]
 class CopyImprovementsConfig:
     convergence_window_sec: int = 600
     convergence_min_wallets: int = 2
+    require_convergence_for_copy: bool = False
     convergence_boost_per_wallet: int = 12
     convergence_size_step: float = 0.15
     convergence_size_cap: float = 2.0

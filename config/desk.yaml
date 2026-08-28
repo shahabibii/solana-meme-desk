@@ -11,21 +11,25 @@ allowed_sources:
   - convergence
   - fomo
 
-# Lower bar for copy/convergence signals (pump launches disabled anyway)
+# Copy/convergence entry bar — raised copy to reduce low-quality mirrors
 entry_min_score:
   default: 72
-  copy: 65
+  copy: 72
   convergence: 68
   fomo: 68
+
+# No stale relay backfill on deploy — live signals only
+fomo_relay_backfill_minutes: 0
 
 # Copy-trading improvements (convergence, mirror sells, smart dedup)
 copy_improvements:
   convergence_window_sec: 600
   convergence_min_wallets: 2
+  require_convergence_for_copy: true
   convergence_boost_per_wallet: 12
   convergence_size_step: 0.15
   convergence_size_cap: 2.0
-  mirror_sell_enabled: true
+  mirror_sell_enabled: false
   mirror_sell_fraction: 0.5
   mirror_sell_full_wallets: 2
   retry_after_block: true

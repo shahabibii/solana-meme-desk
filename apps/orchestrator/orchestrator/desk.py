@@ -107,6 +107,10 @@ class DeskRuntime:
             count, is_new = self._copy_tracker.record_buy(mint, trader)
             candidate.meta["convergence_count"] = count
             candidate.copy_boost += self._copy_tracker.convergence_boost(count)
+            imp = self.feed_cfg.copy_improvements
+            if imp and imp.require_convergence_for_copy:
+                if count < imp.convergence_min_wallets:
+                    return
             if not self._copy_tracker.should_enqueue_buy(mint, is_new_trader=is_new):
                 return
         else:
@@ -954,9 +958,11 @@ async def start_desk(
                 holdings = await wallet_mints_with_balance(settings.helius_api_key, addr)
                 desk._wallet_mint_cache[addr] = holdings
         try:
-            n = await desk.backfill_fomo_relays(get_mode(), minutes=60)
-            if n:
-                log.info("fomo relay backfill: %s signals", n)
+            minutes = feed_cfg.fomo_relay_backfill_minutes
+            if minutes > 0:
+                n = await desk.backfill_fomo_relays(get_mode(), minutes=minutes)
+                if n:
+                    log.info("fomo relay backfill: %s signals", n)
         except Exception as exc:
             log.warning("fomo relay backfill failed: %s", exc)
 

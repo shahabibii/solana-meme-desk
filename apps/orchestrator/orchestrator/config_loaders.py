@@ -20,6 +20,7 @@ class DeskFeedConfig:
     allowed_sources: frozenset[str] = frozenset({"copy", "convergence", "fomo"})
     entry_min_score_default: int = 72
     entry_min_score_by_source: dict[str, int] = field(default_factory=dict)
+    fomo_relay_backfill_minutes: int = 0
     copy_improvements: "CopyImprovementsConfig | None" = None
 
 
@@ -140,6 +141,7 @@ def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
     copy_improvements = CopyImprovementsConfig(
         convergence_window_sec=int(imp_raw.get("convergence_window_sec", 600)),
         convergence_min_wallets=int(imp_raw.get("convergence_min_wallets", 2)),
+        require_convergence_for_copy=bool(imp_raw.get("require_convergence_for_copy", False)),
         convergence_boost_per_wallet=int(imp_raw.get("convergence_boost_per_wallet", 12)),
         convergence_size_step=float(imp_raw.get("convergence_size_step", 0.15)),
         convergence_size_cap=float(imp_raw.get("convergence_size_cap", 2.0)),
@@ -157,6 +159,7 @@ def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
         entry_min_score_default=default_score,
         entry_min_score_by_source=by_source,
         copy_improvements=copy_improvements,
+        fomo_relay_backfill_minutes=int(raw.get("fomo_relay_backfill_minutes", 0)),
     )
 
 
