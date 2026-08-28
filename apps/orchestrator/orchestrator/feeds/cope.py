@@ -189,7 +189,8 @@ class CopeClient:
                 h = item.get("handle") or item.get("username") or item.get("name")
                 if h:
                     handles.append(str(h).lstrip("@"))
-        self._handles = handles
+        if handles:
+            self._merge_handles(handles)
         return handles
 
     async def leaderboard(self, *, timeframe: str = "7d", limit: int = 20) -> list[dict[str, Any]]:

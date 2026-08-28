@@ -172,7 +172,7 @@ class DeskRuntime:
                 "wallets": len(self._copy_wallets),
                 "pumpportal_required": bool(self.settings.pumpportal_api_key),
                 "fomo_handle": self.settings.fomo_handle,
-                "fomo_handles": list(self.cope._handles)[:20],
+                "fomo_handles": list(self.cope._handles or self.fomo_follows.handles)[:20],
                 "manual_follows": len(self.fomo_follows.handles),
                 "configured_wallets": len(self.copy_cfg.wallets),
                 "cope_error": self.cope.last_error,
