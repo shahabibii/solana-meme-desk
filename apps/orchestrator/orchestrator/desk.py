@@ -120,7 +120,9 @@ class DeskRuntime:
         imported = 0
         disposed: list[dict] = []
 
+        on_chain_mints: set[str] = set()
         for token in await list_wallet_tokens(rpc, owner):
+            on_chain_mints.add(token.mint)
             if token.mint in dispose_set:
                 try:
                     result = await self.live.dispose_dead_bag(token.mint)
@@ -157,11 +159,18 @@ class DeskRuntime:
             except Exception as exc:
                 log.warning("import %s failed: %s", token.mint[:12], exc)
 
+        on_chain_mints = {t.mint for t in await list_wallet_tokens(rpc, owner)}
+        stale = [m for m in list(self._live_tracks.keys()) if m not in on_chain_mints]
+        for mint in stale:
+            log.warning("dropping stale live track (zero on-chain balance): %s", mint[:12])
+            self._live_tracks.pop(mint, None)
+
         self._save_live_tracks()
         return {
             "imported": imported,
             "tracked": len(self._live_tracks),
             "disposed": disposed,
+            "stale_removed": stale,
         }
 
     async def dispose_dead_bag(self, mint: str) -> dict:
@@ -1115,6 +1124,18 @@ class DeskRuntime:
                 pct, float(track["peak_pnl_pct"]), hold_min, lim, tp_hit
             )
             if not exit_reason:
+                continue
+            from orchestrator.execution.jupiter import get_token_balance_raw
+
+            bal = await get_token_balance_raw(
+                self.settings.effective_rpc_url or "",
+                self.live.public_key or "",
+                mint,
+            )
+            if bal <= 0:
+                log.warning("dropping zero-balance live track on %s: %s", exit_reason, mint[:12])
+                self._live_tracks.pop(mint, None)
+                self._save_live_tracks()
                 continue
             try:
                 venue = track.get("venue")

@@ -523,11 +523,11 @@ async def exit_position(body: ExitPositionBody) -> dict[str, Any]:
 
 
 @app.get("/api/desk/copy-audit")
-async def copy_audit(hours: float = 8.0) -> dict[str, Any]:
+async def copy_audit(hours: float = 8.0, limit: int = 40) -> dict[str, Any]:
     """Compare watched-wallet buys on Helius vs our live journal."""
     if not _desk:
         raise HTTPException(503, detail="Desk not ready")
-    return await _desk.audit_watched_buys(hours=hours)
+    return await _desk.audit_watched_buys(hours=hours, limit=min(limit, 100))
 
 
 @app.post("/api/copy/refresh")
