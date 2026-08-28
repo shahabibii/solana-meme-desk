@@ -135,14 +135,44 @@ class LiveExecutor:
         amount: float | str = f"{int(round(fraction * 100))}%"
         return await self._trade("sell", mint, amount, denominated_in_sol=False)
 
-    async def sell_for_venue(self, mint: str, fraction: float, venue: str | None) -> dict[str, Any]:
-        if is_pump_venue(venue):
-            out = await self.sell(mint, fraction)
-            out["venue_exec"] = "pumpportal"
+    async def sell_for_venue(
+        self,
+        mint: str,
+        fraction: float,
+        venue: str | None,
+        *,
+        venue_exec: str | None = None,
+    ) -> dict[str, Any]:
+        """Sell using the same path as buy when possible; fall back across venues."""
+        preferred = str(venue_exec or "").lower()
+        pump_first = preferred == "pumpportal" or (
+            not preferred and (is_pump_venue(venue) or str(mint).lower().endswith("pump"))
+        )
+        errors: list[str] = []
+
+        if pump_first:
+            try:
+                out = await self.sell(mint, fraction)
+                out["venue_exec"] = "pumpportal"
+                return out
+            except Exception as exc:
+                errors.append(f"pump:{exc}")
+
+        try:
+            out = await self.jupiter_sell(mint, fraction)
+            out["venue_exec"] = "jupiter"
             return out
-        out = await self.jupiter_sell(mint, fraction)
-        out["venue_exec"] = "jupiter"
-        return out
+        except Exception as exc:
+            errors.append(f"jupiter:{exc}")
+            if not pump_first and (is_pump_venue(venue) or str(mint).lower().endswith("pump")):
+                try:
+                    out = await self.sell(mint, fraction)
+                    out["venue_exec"] = "pumpportal"
+                    return out
+                except Exception as exc2:
+                    errors.append(f"pump:{exc2}")
+
+        raise RuntimeError(" | ".join(str(e) for e in errors)[:240])
 
     async def dispose_dead_bag(self, mint: str) -> dict[str, Any]:
         """Try to sell; if no route, burn balance and close token account for rent."""

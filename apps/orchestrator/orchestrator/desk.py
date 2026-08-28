@@ -170,6 +170,191 @@ class DeskRuntime:
         self._save_live_tracks()
         return result
 
+    async def force_exit_live_position(
+        self,
+        mint: str,
+        *,
+        reason: str = "manual",
+        fraction: float = 1.0,
+    ) -> dict:
+        """Force-sell (or dispose) a live position and journal the exit."""
+        track = self._live_tracks.get(mint)
+        if not track and not self.live.ready:
+            raise RuntimeError("live_not_ready")
+
+        price, _ = await mark_price_usd(mint)
+        entry_px = float((track or {}).get("entry_price") or 0.0001)
+        entry_sol = float((track or {}).get("entry_sol") or 0.05)
+        pct = None
+        if price and entry_px > 0:
+            pct = ((price / entry_px) - 1.0) * 100.0
+
+        venue = (track or {}).get("venue")
+        venue_exec = (track or {}).get("venue_exec")
+        errors: list[str] = []
+        result: dict | None = None
+        for attempt in (
+            lambda: self.live.sell_for_venue(
+                mint,
+                fraction,
+                str(venue) if venue else None,
+                venue_exec=str(venue_exec) if venue_exec else None,
+            ),
+            lambda: self.live.jupiter_sell(mint, fraction),
+            lambda: self.live.dispose_dead_bag(mint),
+        ):
+            try:
+                result = await attempt()
+                break
+            except Exception as exc:
+                errors.append(str(exc)[:160])
+
+        if not result:
+            raise RuntimeError(" | ".join(errors)[:240])
+
+        sig = result.get("signature", "")
+        disposal = result.get("disposal")
+        proceeds = entry_sol * fraction * (1.0 + (pct or 0.0) / 100.0)
+        self.journal.record_trade(
+            mint=mint,
+            symbol=str((track or {}).get("symbol") or mint[:8]),
+            side="sell",
+            sol=proceeds,
+            pnl_pct=pct,
+            mode="live",
+            source=str((track or {}).get("source") or "manual"),
+            detail={"exit": reason, "signature": sig, "errors": errors[:3], **result},
+        )
+        if fraction >= 1.0 or disposal:
+            self._live_tracks.pop(mint, None)
+        elif track:
+            track["entry_sol"] = entry_sol * (1.0 - fraction)
+        self._save_live_tracks()
+        await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
+        await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.LIVE)}))
+        return {
+            "mint": mint,
+            "exit": reason,
+            "pnl_pct": pct,
+            "proceeds_sol": round(proceeds, 4),
+            "result": result,
+        }
+
+    async def audit_watched_buys(self, *, hours: float = 8.0, limit: int = 20) -> dict:
+        """Scan Helius history for watched-wallet buys vs our journal."""
+        import httpx
+
+        from orchestrator.feeds.helius_wallets import parse_helius_swap
+
+        if not self.settings.helius_api_key:
+            return {"error": "helius_not_configured"}
+
+        watched = set(self._copy_wallets)
+        our_buys = {
+            str(t.get("mint") or "")
+            for t in self.journal.recent_trades(500)
+            if t.get("side") == "buy" and t.get("mode") == "live"
+        }
+        imp = self.feed_cfg.copy_improvements or CopyImprovementsConfig()
+        cutoff = time.time() - hours * 3600
+        conv_window = imp.convergence_window_sec
+        url_tpl = (
+            "https://api.helius.xyz/v0/addresses/{address}/transactions"
+            f"?api-key={self.settings.helius_api_key}&limit={limit}"
+        )
+        seen_sigs: set[str] = set()
+        raw_buys: list[dict] = []
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for addr in self._copy_wallets:
+                handle = next(
+                    (h for h, w in self._wallets_by_handle.items() if w == addr),
+                    addr[:8],
+                )
+                try:
+                    resp = await client.get(url_tpl.format(address=addr))
+                    if resp.status_code != 200:
+                        continue
+                    txs = resp.json()
+                    if not isinstance(txs, list):
+                        continue
+                    for tx in txs:
+                        sig = str((tx or {}).get("signature") or "")
+                        if not sig or sig in seen_sigs:
+                            continue
+                        ts = int((tx or {}).get("timestamp") or 0)
+                        if ts and ts < cutoff:
+                            continue
+                        parsed = parse_helius_swap(tx, watched)
+                        if not parsed or parsed.get("side") != "buy":
+                            continue
+                        seen_sigs.add(sig)
+                        raw_buys.append(
+                            {
+                                "ts": ts,
+                                "ts_iso": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else None,
+                                "handle": handle,
+                                "trader": str(parsed.get("trader") or addr),
+                                "mint": str(parsed.get("mint") or ""),
+                                "trader_sol": parsed.get("trader_sol"),
+                                "signature": sig[:20],
+                            }
+                        )
+                except Exception as exc:
+                    log.debug("audit %s: %s", addr[:8], exc)
+
+        # Convergence counts per mint within the convergence window (read-only).
+        mint_traders: dict[str, set[str]] = {}
+        for b in raw_buys:
+            mint = b["mint"]
+            if not mint:
+                continue
+            mint_traders.setdefault(mint, set())
+            if b["ts"] and b["ts"] >= time.time() - conv_window:
+                mint_traders[mint].add(b["trader"])
+
+        buys: list[dict] = []
+        for b in raw_buys:
+            mint = b["mint"]
+            conv = len(mint_traders.get(mint, set()))
+            reasons: list[str] = []
+            if mint in our_buys:
+                reasons.append("we_bought")
+            elif imp.require_convergence_for_copy and conv < imp.convergence_min_wallets:
+                reasons.append(f"need_convergence({conv}/{imp.convergence_min_wallets})")
+            elif self._copy_tracker._mint_status.get(mint) == "filled":
+                reasons.append("already_filled")
+            elif self._copy_tracker._mint_status.get(mint) == "processing":
+                reasons.append("in_pipeline")
+            else:
+                reasons.append("filtered_score_or_risk")
+            buys.append(
+                {
+                    "ts": b["ts_iso"],
+                    "handle": b["handle"],
+                    "trader": b["trader"][:12],
+                    "mint": mint,
+                    "mint_short": mint[:8],
+                    "trader_sol": b["trader_sol"],
+                    "convergence_wallets": conv,
+                    "we_traded": mint in our_buys,
+                    "why": reasons,
+                    "signature": b["signature"],
+                }
+            )
+
+        buys.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+        missed = [b for b in buys if not b["we_traded"]]
+        return {
+            "hours": hours,
+            "wallets_scanned": len(self._copy_wallets),
+            "watched_buys": len(buys),
+            "we_traded_mints": len(our_buys),
+            "missed_or_filtered": len(missed),
+            "buys": buys[:40],
+            "missed": missed[:20],
+        }
+
     async def enqueue(self, candidate: MintCandidate) -> None:
         if self.feed_cfg.fomo_copy_mode and candidate.source not in self.feed_cfg.allowed_sources:
             return
@@ -777,6 +962,7 @@ class DeskRuntime:
                         "entry_ts": datetime.now(timezone.utc),
                         "source": candidate.source,
                         "venue": venue,
+                        "venue_exec": result.get("venue_exec") or result.get("mode"),
                         "peak_pnl_pct": 0.0,
                         "entry_price": price or 0.0001,
                         "tp_hit": set(),
@@ -932,8 +1118,12 @@ class DeskRuntime:
                 continue
             try:
                 venue = track.get("venue")
+                venue_exec = track.get("venue_exec")
                 result = await self.live.sell_for_venue(
-                    mint, fraction, str(venue) if venue else None
+                    mint,
+                    fraction,
+                    str(venue) if venue else None,
+                    venue_exec=str(venue_exec) if venue_exec else None,
                 )
                 sig = result.get("signature", "")
                 proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
@@ -947,7 +1137,7 @@ class DeskRuntime:
                     pnl_pct=pct,
                     mode="live",
                     source=str(track.get("source") or "pump"),
-                    detail={"exit": exit_reason, "signature": sig},
+                    detail={"exit": exit_reason, "signature": sig, **result},
                 )
                 await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
                 if fraction >= 1.0:
@@ -956,8 +1146,13 @@ class DeskRuntime:
                     track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
                 self._save_live_tracks()
                 await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.LIVE)}))
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "live exit failed %s (%s): %s",
+                    mint[:12],
+                    exit_reason,
+                    exc,
+                )
 
     @staticmethod
     def _exit_signal(

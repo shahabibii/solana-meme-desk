@@ -138,6 +138,11 @@ class FomoSyncBody(BaseModel):
     fomo_handle: str = Field(min_length=1, max_length=64)
 
 
+class ExitPositionBody(BaseModel):
+    mint: str = Field(min_length=32, max_length=64)
+    reason: str = "manual"
+
+
 def _setup_checklist() -> dict[str, Any]:
     flags = settings.integration_flags()
     fomo_copy = bool(
@@ -502,6 +507,27 @@ async def reconcile_positions() -> dict[str, Any]:
     result = await _desk.reconcile_live_positions()
     await _broadcast(status_snapshot(await _desk_status()))
     return result
+
+
+@app.post("/api/desk/exit-position")
+async def exit_position(body: ExitPositionBody) -> dict[str, Any]:
+    """Force-sell or dispose a live position."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    try:
+        result = await _desk.force_exit_live_position(body.mint.strip(), reason=body.reason)
+    except Exception as exc:
+        raise HTTPException(400, detail=str(exc)[:240]) from exc
+    await _broadcast(status_snapshot(await _desk_status()))
+    return result
+
+
+@app.get("/api/desk/copy-audit")
+async def copy_audit(hours: float = 8.0) -> dict[str, Any]:
+    """Compare watched-wallet buys on Helius vs our live journal."""
+    if not _desk:
+        raise HTTPException(503, detail="Desk not ready")
+    return await _desk.audit_watched_buys(hours=hours)
 
 
 @app.post("/api/copy/refresh")

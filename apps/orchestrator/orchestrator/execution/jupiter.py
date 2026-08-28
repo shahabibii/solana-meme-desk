@@ -68,16 +68,33 @@ async def get_token_balance_raw(rpc_url: str, owner: str, mint: str) -> int:
             {"encoding": "jsonParsed"},
         ],
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(rpc_url, json=payload)
-        data = resp.json()
-        accounts = (data.get("result") or {}).get("value") or []
-        total = 0
-        for item in accounts:
-            info = ((item.get("account") or {}).get("data") or {}).get("parsed", {})
-            token_amount = (info.get("info") or {}).get("tokenAmount") or {}
-            total += int(str(token_amount.get("amount") or "0"))
-        return total
+    for rpc in (rpc_url, os.environ.get("SOLANA_RPC_URL"), "https://api.mainnet-beta.solana.com"):
+        if not rpc:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(rpc, json=payload)
+                data = resp.json()
+                accounts = (data.get("result") or {}).get("value") or []
+                total = 0
+                for item in accounts:
+                    info = ((item.get("account") or {}).get("data") or {}).get("parsed", {})
+                    token_amount = (info.get("info") or {}).get("tokenAmount") or {}
+                    total += int(str(token_amount.get("amount") or "0"))
+                if total > 0:
+                    return total
+        except Exception:
+            continue
+
+    from orchestrator.execution.wallet_tokens import list_wallet_tokens
+
+    try:
+        for token in await list_wallet_tokens(rpc_url or "", owner):
+            if token.mint == mint:
+                return token.amount_raw
+    except Exception:
+        pass
+    return 0
 
 
 async def jupiter_swap(
