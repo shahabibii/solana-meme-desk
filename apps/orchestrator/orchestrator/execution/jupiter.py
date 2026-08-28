@@ -169,4 +169,6 @@ async def jupiter_swap(
         "input_mint": input_mint,
         "output_mint": output_mint,
         "amount_raw": amount_raw,
+        "out_amount_raw": int(str(quote.get("outAmount") or "0") or "0"),
+        "in_amount_raw": int(str(quote.get("inAmount") or amount_raw) or amount_raw),
     }

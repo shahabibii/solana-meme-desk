@@ -27,6 +27,7 @@ from orchestrator.config_loaders import (
     load_fomo_wallets_by_handle,
 )
 from orchestrator.execution.live import LiveExecutor
+from orchestrator.execution.jupiter import SOL_MINT, get_token_balance_raw, jupiter_quote
 from orchestrator.execution.wallet_tokens import estimate_entry_sol_for_mint, list_wallet_tokens
 from orchestrator.live_positions import LivePositionStore
 from orchestrator.execution.paper import PaperBook, RiskLimits
@@ -42,6 +43,8 @@ from orchestrator.ws import events as ev
 log = logging.getLogger(__name__)
 
 Broadcast = Callable[[ev.OnyxEvent], Awaitable[None]]
+# Never treat this as a real entry mark — caused false −96% stops.
+PLACEHOLDER_ENTRY_PX = 0.0001
 
 
 def load_risk_limits(config_dir: Path) -> RiskLimits:
@@ -120,6 +123,132 @@ class DeskRuntime:
         except Exception as exc:
             log.warning("live position persist failed: %s", exc)
 
+    @staticmethod
+    def _entry_mark_valid(track: dict) -> bool:
+        try:
+            px = float(track.get("entry_price") or 0)
+        except (TypeError, ValueError):
+            return False
+        if px <= 0 or abs(px - PLACEHOLDER_ENTRY_PX) <= 1e-12:
+            return False
+        # Legacy tracks may lack the flag but still have a real price.
+        if "entry_price_valid" in track and not track.get("entry_price_valid"):
+            return False
+        return True
+
+    async def _quote_tokens_to_sol(self, mint: str, amount_raw: int) -> float | None:
+        if amount_raw <= 0:
+            return None
+        quote = await jupiter_quote(
+            input_mint=mint,
+            output_mint=SOL_MINT,
+            amount_raw=amount_raw,
+            slippage_bps=int(self.settings.trade_slippage_pct * 100),
+        )
+        if not quote:
+            return None
+        try:
+            out = int(str(quote.get("outAmount") or "0"))
+        except (TypeError, ValueError):
+            return None
+        if out <= 0:
+            return None
+        return out / 1_000_000_000.0
+
+    async def _resolve_entry_mark(self, mint: str, track: dict, *, sol_spent: float | None = None) -> None:
+        """Fill a real entry mark — prefer USD price, else SOL/token from Jupiter."""
+        if self._entry_mark_valid(track):
+            return
+        price, src = await mark_price_usd(mint)
+        if price and price > 0:
+            track["entry_price"] = price
+            track["entry_price_valid"] = True
+            track["price_src"] = src
+            return
+
+        rpc = self.settings.effective_rpc_url or ""
+        owner = self.live.public_key or ""
+        bal = await get_token_balance_raw(rpc, owner, mint)
+        if bal > 0:
+            track["entry_tokens_raw"] = bal
+            mark_sol = await self._quote_tokens_to_sol(mint, bal)
+            spent = float(sol_spent if sol_spent is not None else track.get("entry_sol") or 0)
+            if mark_sol and mark_sol > 0 and spent > 0:
+                # Synthetic USD-free unit price so ratios work: entry_px=spent, mark later in same units.
+                track["entry_price"] = spent
+                track["entry_mark_sol"] = spent
+                track["entry_price_valid"] = True
+                track["price_src"] = "sol_basis"
+                track["mark_mode"] = "sol"
+                return
+        track["entry_price"] = None
+        track["entry_price_valid"] = False
+        track["price_src"] = "none"
+
+    async def _live_pnl_pct(self, mint: str, track: dict) -> tuple[float | None, str]:
+        """Return (pnl_pct, source). Prefer SOL-native Jupiter mark for live exits."""
+        entry_sol = float(track.get("entry_sol") or 0)
+        rpc = self.settings.effective_rpc_url or ""
+        owner = self.live.public_key or ""
+        bal = await get_token_balance_raw(rpc, owner, mint)
+        if bal > 0:
+            track["entry_tokens_raw"] = track.get("entry_tokens_raw") or bal
+            mark_sol = await self._quote_tokens_to_sol(mint, bal)
+            if mark_sol is not None and entry_sol > 0:
+                # Scale if we only hold a fraction of original size.
+                entry_raw = float(track.get("entry_tokens_raw") or bal)
+                held_frac = min(1.0, bal / entry_raw) if entry_raw > 0 else 1.0
+                basis = entry_sol * held_frac
+                if basis > 0:
+                    pct = (mark_sol / basis - 1.0) * 100.0
+                    track["mark_mode"] = "sol"
+                    track["last_mark_sol"] = mark_sol
+                    return pct, "jupiter_sol"
+
+        if not self._entry_mark_valid(track):
+            await self._resolve_entry_mark(mint, track)
+        if not self._entry_mark_valid(track):
+            return None, "unpriced"
+
+        price, src = await mark_price_usd(mint)
+        entry_px = float(track.get("entry_price") or 0)
+        if not price or entry_px <= 0:
+            return None, "unpriced"
+        pct = ((price / entry_px) - 1.0) * 100.0
+        track["mark_mode"] = "usd"
+        return pct, src
+
+    async def _sol_balance(self) -> float | None:
+        try:
+            return await self.live.get_balance_sol()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _proceeds_from_result(
+        result: dict,
+        *,
+        sol_before: float | None,
+        sol_after: float | None,
+        entry_sol: float,
+        fraction: float,
+        pct: float | None,
+    ) -> tuple[float, str]:
+        """Prefer actual SOL received; never trust placeholder mark formulas alone."""
+        out_raw = result.get("out_amount_raw")
+        try:
+            if out_raw is not None and int(out_raw) > 0:
+                return int(out_raw) / 1_000_000_000.0, "jupiter_out"
+        except (TypeError, ValueError):
+            pass
+        if sol_before is not None and sol_after is not None:
+            delta = sol_after - sol_before
+            if delta > 0.0001:
+                return delta, "wallet_delta"
+        if pct is not None:
+            return float(entry_sol) * fraction * (1.0 + pct / 100.0), "mark_estimate"
+        return float(entry_sol) * fraction, "entry_fraction"
+
     async def reconcile_live_positions(self, *, dispose_mints: list[str] | None = None) -> dict:
         """Import on-chain SPL holdings into the live tracker (TP/SL monitor)."""
         if not self.live.ready or not self.live.public_key:
@@ -150,16 +279,22 @@ class DeskRuntime:
                 entry_sol, entry_ts = await estimate_entry_sol_for_mint(rpc, owner, token.mint)
                 price, _ = await mark_price_usd(token.mint)
                 symbol = token.mint[:6].upper()
-                self._live_tracks[token.mint] = {
+                track = {
                     "symbol": symbol,
                     "entry_sol": round(entry_sol, 4),
                     "entry_ts": entry_ts or datetime.now(timezone.utc),
                     "source": "import",
                     "venue": "jupiter",
                     "peak_pnl_pct": 0.0,
-                    "entry_price": price or 0.0001,
+                    "entry_price": price if price and price > 0 else None,
+                    "entry_price_valid": bool(price and price > 0),
+                    "price_src": "import_mark" if price else "none",
+                    "entry_tokens_raw": token.amount_raw,
                     "tp_hit": set(),
                 }
+                if not track["entry_price_valid"]:
+                    await self._resolve_entry_mark(token.mint, track, sol_spent=entry_sol)
+                self._live_tracks[token.mint] = track
                 imported += 1
                 log.info(
                     "imported live position %s (%s) entry_sol=%.4f",
@@ -201,17 +336,16 @@ class DeskRuntime:
         if not track and not self.live.ready:
             raise RuntimeError("live_not_ready")
 
-        price, _ = await mark_price_usd(mint)
-        entry_px = float((track or {}).get("entry_price") or 0.0001)
         entry_sol = float((track or {}).get("entry_sol") or 0.05)
-        pct = None
-        if price and entry_px > 0:
-            pct = ((price / entry_px) - 1.0) * 100.0
+        pct, mark_src = (None, "none")
+        if track:
+            pct, mark_src = await self._live_pnl_pct(mint, track)
 
         venue = (track or {}).get("venue")
         venue_exec = (track or {}).get("venue_exec")
         errors: list[str] = []
         result: dict | None = None
+        sol_before = await self._sol_balance()
         for attempt in (
             lambda: self.live.sell_for_venue(
                 mint,
@@ -231,18 +365,36 @@ class DeskRuntime:
         if not result:
             raise RuntimeError(" | ".join(errors)[:240])
 
+        await asyncio.sleep(0.8)
+        sol_after = await self._sol_balance()
         sig = result.get("signature", "")
         disposal = result.get("disposal")
-        proceeds = entry_sol * fraction * (1.0 + (pct or 0.0) / 100.0)
+        proceeds, proceeds_src = self._proceeds_from_result(
+            result,
+            sol_before=sol_before,
+            sol_after=sol_after,
+            entry_sol=entry_sol,
+            fraction=fraction,
+            pct=pct,
+        )
+        basis = entry_sol * fraction
+        realized_pct = ((proceeds / basis) - 1.0) * 100.0 if basis > 0 else pct
         self.journal.record_trade(
             mint=mint,
             symbol=str((track or {}).get("symbol") or mint[:8]),
             side="sell",
             sol=proceeds,
-            pnl_pct=pct,
+            pnl_pct=realized_pct,
             mode="live",
             source=str((track or {}).get("source") or "manual"),
-            detail={"exit": reason, "signature": sig, "errors": errors[:3], **result},
+            detail={
+                "exit": reason,
+                "signature": sig,
+                "errors": errors[:3],
+                "mark_src": mark_src,
+                "proceeds_src": proceeds_src,
+                **result,
+            },
         )
         if fraction >= 1.0 or disposal:
             self._live_tracks.pop(mint, None)
@@ -254,8 +406,9 @@ class DeskRuntime:
         return {
             "mint": mint,
             "exit": reason,
-            "pnl_pct": pct,
+            "pnl_pct": realized_pct,
             "proceeds_sol": round(proceeds, 4),
+            "proceeds_src": proceeds_src,
             "result": result,
         }
 
@@ -637,22 +790,36 @@ class DeskRuntime:
             track = self._live_tracks.get(mint)
             if not track:
                 return
-            price, _ = await mark_price_usd(mint)
-            entry_px = float(track.get("entry_price") or 0.0001)
-            pct = ((price / entry_px) - 1.0) * 100.0 if price and entry_px > 0 else 0.0
+            pct, mark_src = await self._live_pnl_pct(mint, track)
             sell_venue = event.get("venue") or track.get("venue")
             try:
+                sol_before = await self._sol_balance()
                 result = await self.live.sell_for_venue(
-                    mint, fraction, str(sell_venue) if sell_venue else None
+                    mint,
+                    fraction,
+                    str(sell_venue) if sell_venue else None,
+                    venue_exec=str(track.get("venue_exec")) if track.get("venue_exec") else None,
                 )
+                await asyncio.sleep(0.8)
+                sol_after = await self._sol_balance()
                 sig = result.get("signature", "")
-                proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
+                entry_sol = float(track["entry_sol"])
+                proceeds, proceeds_src = self._proceeds_from_result(
+                    result,
+                    sol_before=sol_before,
+                    sol_after=sol_after,
+                    entry_sol=entry_sol,
+                    fraction=fraction,
+                    pct=pct,
+                )
+                basis = entry_sol * fraction
+                realized_pct = ((proceeds / basis) - 1.0) * 100.0 if basis > 0 else pct
                 self.journal.record_trade(
                     mint=mint,
                     symbol=str(track.get("symbol") or symbol),
                     side="sell",
                     sol=proceeds,
-                    pnl_pct=pct,
+                    pnl_pct=realized_pct,
                     mode="live",
                     source="copy",
                     detail={
@@ -661,6 +828,9 @@ class DeskRuntime:
                         "sell_count": sell_count,
                         "fraction": fraction,
                         "signature": sig,
+                        "mark_src": mark_src,
+                        "proceeds_src": proceeds_src,
+                        **result,
                     },
                 )
                 await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live", symbol=str((track or {}).get("symbol") or mint[:8])))
@@ -668,7 +838,7 @@ class DeskRuntime:
                     self._live_tracks.pop(mint, None)
                     self._mirror_sell_seen.discard(f"{mint}:{trader}")
                 else:
-                    track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
+                    track["entry_sol"] = entry_sol * (1.0 - fraction)
                 self._save_live_tracks()
                 if self._on_alert:
                     await self._on_alert(
@@ -1020,6 +1190,44 @@ class DeskRuntime:
                     venue = candidate.meta.get("venue")
                     result = await self.live.buy_for_venue(mint, sol, str(venue) if venue else None)
                     sig = result.get("signature", "")
+                    # Prefer real mark; retry briefly after fill so we never store 0.0001.
+                    fill_price, fill_src = price, price_src
+                    if not fill_price:
+                        for _ in range(3):
+                            await asyncio.sleep(0.6)
+                            fill_price, fill_src = await mark_price_usd(mint, event=trade_event)
+                            if fill_price:
+                                break
+                    # Implied token amount from Jupiter buy outAmount.
+                    tokens_raw = 0
+                    try:
+                        tokens_raw = int(result.get("out_amount_raw") or 0)
+                    except (TypeError, ValueError):
+                        tokens_raw = 0
+                    if tokens_raw <= 0 and self.live.public_key:
+                        tokens_raw = await get_token_balance_raw(
+                            self.settings.effective_rpc_url or "",
+                            self.live.public_key,
+                            mint,
+                        )
+                    track = {
+                        "symbol": candidate.symbol,
+                        "entry_sol": sol,
+                        "entry_ts": datetime.now(timezone.utc),
+                        "source": candidate.source,
+                        "venue": venue,
+                        "venue_exec": result.get("venue_exec") or result.get("mode"),
+                        "peak_pnl_pct": 0.0,
+                        "entry_price": fill_price if fill_price and fill_price > 0 else None,
+                        "entry_price_valid": bool(fill_price and fill_price > 0),
+                        "price_src": fill_src if fill_price else "none",
+                        "entry_tokens_raw": tokens_raw or None,
+                        "tp_hit": set(),
+                    }
+                    if not track["entry_price_valid"]:
+                        await self._resolve_entry_mark(mint, track, sol_spent=sol)
+                    self._live_tracks[mint] = track
+                    self._save_live_tracks()
                     self.journal.record_trade(
                         mint=mint,
                         symbol=candidate.symbol,
@@ -1031,24 +1239,14 @@ class DeskRuntime:
                         safety_score=report.score,
                         detail={
                             "signature": sig,
-                            "price_src": price_src,
+                            "price_src": track.get("price_src"),
+                            "entry_price": track.get("entry_price"),
+                            "entry_price_valid": track.get("entry_price_valid"),
                             "convergence_count": conv,
                             "venue": venue,
                             **result,
                         },
                     )
-                    self._live_tracks[mint] = {
-                        "symbol": candidate.symbol,
-                        "entry_sol": sol,
-                        "entry_ts": datetime.now(timezone.utc),
-                        "source": candidate.source,
-                        "venue": venue,
-                        "venue_exec": result.get("venue_exec") or result.get("mode"),
-                        "peak_pnl_pct": 0.0,
-                        "entry_price": price or 0.0001,
-                        "tp_hit": set(),
-                    }
-                    self._save_live_tracks()
                     await self.broadcast(ev.trade_fill("buy", mint, sol, "live", symbol=candidate.symbol))
                     if self._on_alert:
                         await self._on_alert(
@@ -1075,13 +1273,8 @@ class DeskRuntime:
             open_mtm = 0.0
             for mint, track in self._live_tracks.items():
                 entry_sol = float(track.get("entry_sol", 0))
-                entry_px = float(track.get("entry_price") or 0.0001)
-                price, _ = await mark_price_usd(mint)
-                pct = None
-                mtm = entry_sol
-                if price and entry_px > 0:
-                    pct = ((price / entry_px) - 1.0) * 100.0
-                    mtm = entry_sol * (1.0 + pct / 100.0)
+                pct, _ = await self._live_pnl_pct(mint, track)
+                mtm = entry_sol * (1.0 + pct / 100.0) if pct is not None else entry_sol
                 open_mtm += mtm
                 positions.append(
                     {
@@ -1182,22 +1375,24 @@ class DeskRuntime:
             track = self._live_tracks.get(mint)
             if not track:
                 continue
-            price, _ = await mark_price_usd(mint)
-            entry_px = float(track.get("entry_price") or 0.0001)
-            if not price or entry_px <= 0:
-                continue
-            pct = ((price / entry_px) - 1.0) * 100.0
-            track["peak_pnl_pct"] = max(float(track.get("peak_pnl_pct", 0)), pct)
-            tp_hit: set[float] = track.setdefault("tp_hit", set())
-            await self.broadcast(ev.position_update(mint, round(pct, 2)))
-
+            pct, mark_src = await self._live_pnl_pct(mint, track)
             hold_min = (datetime.now(timezone.utc) - track["entry_ts"]).total_seconds() / 60.0
-            exit_reason, fraction, tp_level = self._exit_signal(
-                pct, float(track["peak_pnl_pct"]), hold_min, lim, tp_hit
-            )
-            if not exit_reason:
-                continue
-            from orchestrator.execution.jupiter import get_token_balance_raw
+
+            # No stop/TP on unpriced bags — waiting for a real mark avoids false −96% rugs.
+            if pct is None:
+                if hold_min >= lim.max_hold_minutes:
+                    exit_reason, fraction, tp_level = "max_hold", 1.0, None
+                else:
+                    continue
+            else:
+                track["peak_pnl_pct"] = max(float(track.get("peak_pnl_pct", 0)), pct)
+                tp_hit: set[float] = track.setdefault("tp_hit", set())
+                await self.broadcast(ev.position_update(mint, round(pct, 2)))
+                exit_reason, fraction, tp_level = self._exit_signal(
+                    pct, float(track["peak_pnl_pct"]), hold_min, lim, tp_hit
+                )
+                if not exit_reason:
+                    continue
 
             bal = await get_token_balance_raw(
                 self.settings.effective_rpc_url or "",
@@ -1212,33 +1407,68 @@ class DeskRuntime:
             try:
                 venue = track.get("venue")
                 venue_exec = track.get("venue_exec")
+                sol_before = await self._sol_balance()
                 result = await self.live.sell_for_venue(
                     mint,
                     fraction,
                     str(venue) if venue else None,
                     venue_exec=str(venue_exec) if venue_exec else None,
                 )
+                await asyncio.sleep(0.8)
+                sol_after = await self._sol_balance()
                 sig = result.get("signature", "")
-                proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
+                entry_sol = float(track["entry_sol"])
+                proceeds, proceeds_src = self._proceeds_from_result(
+                    result,
+                    sol_before=sol_before,
+                    sol_after=sol_after,
+                    entry_sol=entry_sol,
+                    fraction=fraction,
+                    pct=pct,
+                )
+                # Realized PnL from actual SOL when possible.
+                basis = entry_sol * fraction
+                realized_pct = ((proceeds / basis) - 1.0) * 100.0 if basis > 0 else pct
                 if tp_level is not None:
-                    tp_hit.add(tp_level)
+                    track.setdefault("tp_hit", set()).add(tp_level)
                 self.journal.record_trade(
                     mint=mint,
                     symbol=str(track["symbol"]),
                     side="sell",
                     sol=proceeds,
-                    pnl_pct=pct,
+                    pnl_pct=realized_pct,
                     mode="live",
                     source=str(track.get("source") or "pump"),
-                    detail={"exit": exit_reason, "signature": sig, **result},
+                    detail={
+                        "exit": exit_reason,
+                        "signature": sig,
+                        "mark_src": mark_src,
+                        "proceeds_src": proceeds_src,
+                        "mark_pnl_pct": pct,
+                        **result,
+                    },
                 )
-                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live", symbol=str((track or {}).get("symbol") or mint[:8])))
+                await self.broadcast(
+                    ev.trade_fill(
+                        "sell",
+                        mint,
+                        round(proceeds, 4),
+                        "live",
+                        symbol=str(track.get("symbol") or mint[:8]),
+                    )
+                )
                 if fraction >= 1.0:
                     self._live_tracks.pop(mint, None)
                 else:
-                    track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
+                    track["entry_sol"] = entry_sol * (1.0 - fraction)
+                    if track.get("entry_tokens_raw"):
+                        track["entry_tokens_raw"] = int(
+                            float(track["entry_tokens_raw"]) * (1.0 - fraction)
+                        )
                 self._save_live_tracks()
-                await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.LIVE)}))
+                await self.broadcast(
+                    ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.LIVE)})
+                )
             except Exception as exc:
                 log.warning(
                     "live exit failed %s (%s): %s",
