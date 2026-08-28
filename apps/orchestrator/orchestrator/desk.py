@@ -87,6 +87,7 @@ class DeskRuntime:
         self._copy_signals_seen = 0
         self._copy_signals_enqueued = 0
         self._helius_webhook_state: dict | None = None
+        self._helius_poller_seen: dict[str, set[str]] = {}
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
@@ -848,6 +849,10 @@ async def start_desk(
                     "copy_stream",
                     status="ok" if settings.pumpportal_api_key and copy_cfg.enabled else "off",
                 )
+                on_feed_heartbeat(
+                    "helius_poller",
+                    status="ok" if settings.helius_api_key and feed_cfg.helius_wallet_watch else "off",
+                )
                 hw = desk._helius_webhook_state or {}
                 on_feed_heartbeat(
                     "helius_wallets",
@@ -893,6 +898,25 @@ async def start_desk(
             )
 
         tasks.append(asyncio.create_task(_copy_listener()))
+
+    if feed_cfg.helius_wallet_watch and settings.helius_api_key:
+
+        async def _helius_poll_loop() -> None:
+            from orchestrator.feeds.helius_poller import poll_wallet_trades
+
+            async def _on_polled(event: dict) -> None:
+                await desk.on_helius_wallet_trade(event, get_mode())
+
+            await poll_wallet_trades(
+                api_key=settings.helius_api_key or "",
+                wallets_getter=lambda: desk._copy_wallets,
+                on_trade=_on_polled,
+                seen=desk._helius_poller_seen,
+                running=running,
+                interval_sec=20.0,
+            )
+
+        tasks.append(asyncio.create_task(_helius_poll_loop()))
 
     if settings.mock_stream:
         from orchestrator.agents.pipeline import mock_stream_loop

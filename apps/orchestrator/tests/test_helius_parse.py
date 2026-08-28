@@ -153,26 +153,22 @@ def test_ignores_unwatched_wallet() -> None:
     assert parse_helius_swap(tx, {WALLET}) is None
 
 
-def test_skips_stablecoin_buy() -> None:
+def test_skips_stablecoin_unknown_transfer() -> None:
+    rowdy = "CzU8MaRcwvwUoNkwJFLbvtFWJugcEXAhDDQqNFE4ybb7"
     tx = {
-        "type": "SWAP",
-        "source": "JUPITER",
-        "signature": "usdc1",
-        "feePayer": WALLET,
-        "events": {
-            "swap": {
-                "nativeInput": {"account": WALLET, "amount": "1500000000"},
-                "tokenOutputs": [
-                    {
-                        "userAccount": WALLET,
-                        "mint": USDC_MINT,
-                        "rawTokenAmount": {"tokenAmount": "225500000", "decimals": 6},
-                    }
-                ],
+        "type": "UNKNOWN",
+        "source": "UNKNOWN",
+        "signature": "usdc_xfer",
+        "tokenTransfers": [
+            {
+                "fromUserAccount": rowdy,
+                "toUserAccount": OTHER,
+                "mint": USDC_MINT,
+                "tokenAmount": 3000.0,
             }
-        },
+        ],
     }
-    assert parse_helius_swap(tx, {WALLET}) is None
+    assert parse_helius_swap(tx, {rowdy}) is None
 
 
 def test_skips_failed_tx() -> None:

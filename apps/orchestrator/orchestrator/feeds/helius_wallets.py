@@ -16,9 +16,9 @@ from orchestrator.models import MintCandidate
 log = logging.getLogger(__name__)
 HELIUS_API = "https://api.helius.xyz/v0/webhooks"
 
-# Helius webhook filter (API-valid types). Parser also accepts BUY/SELL if present in payload.
-HELIUS_WEBHOOK_TX_TYPES = ["SWAP", "TRANSFER"]
-HELIUS_WALLET_TX_TYPES = frozenset({"SWAP", "BUY", "SELL", "TRANSFER"})
+# Helius webhook filter. ANY catches UNKNOWN routes (e.g. fomo / USDC router txs).
+HELIUS_WEBHOOK_TX_TYPES = ["ANY"]
+HELIUS_WALLET_TX_TYPES = frozenset({"SWAP", "BUY", "SELL", "TRANSFER", "UNKNOWN"})
 
 PUMP_VENUES = frozenset(
     {
