@@ -84,6 +84,8 @@ class DeskRuntime:
         self._live_tracks: dict[str, dict] = {}
         self._copy_wallets: list[str] = list(copy_cfg.wallets)
         self._last_copy_refresh = 0.0
+        self._copy_signals_seen = 0
+        self._copy_signals_enqueued = 0
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
@@ -107,6 +109,8 @@ class DeskRuntime:
             return
         if self._queue.qsize() > 180:
             return
+        if candidate.source == "copy":
+            self._copy_signals_enqueued += 1
         await self._queue.put(candidate)
 
     async def ingest_candidate(
@@ -136,6 +140,7 @@ class DeskRuntime:
         await self.enqueue(candidate)
 
     async def _on_copy_trade(self, candidate: MintCandidate) -> None:
+        self._copy_signals_seen += 1
         await self.enqueue(candidate)
 
     async def handle_copy_sell(self, event: dict, mode: DeskMode) -> None:
@@ -304,6 +309,8 @@ class DeskRuntime:
                 "configured_wallets": len(self.copy_cfg.wallets),
                 "copy_watchlist": watchlist,
                 "manual_wallets_active": len(self._copy_wallets) > 0,
+                "copy_signals_seen": self._copy_signals_seen,
+                "copy_signals_enqueued": self._copy_signals_enqueued,
                 "mirror_sell": bool(
                     self.feed_cfg.copy_improvements and self.feed_cfg.copy_improvements.mirror_sell_enabled
                 ),

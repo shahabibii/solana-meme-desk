@@ -104,18 +104,22 @@ async def account_trade_listener(
         return
 
     while running():
-        wallets = [w for w in wallets_getter() if w][:100]
+        wallets = sorted({w for w in wallets_getter() if w})[:100]
         if not wallets:
             await asyncio.sleep(30)
             continue
         url = _ws_url(api_key)
+        subscribed = list(wallets)
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
                 await ws.send(
-                    json.dumps({"method": "subscribeAccountTrade", "keys": wallets})
+                    json.dumps({"method": "subscribeAccountTrade", "keys": subscribed})
                 )
                 async for message in ws:
                     if not running():
+                        break
+                    current = sorted({w for w in wallets_getter() if w})[:100]
+                    if current != subscribed:
                         break
                     try:
                         data = json.loads(message)
@@ -124,6 +128,9 @@ async def account_trade_listener(
                     items = data if isinstance(data, list) else [data]
                     for item in items:
                         if not isinstance(item, dict):
+                            continue
+                        # PumpPortal sends subscription acks / heartbeats — skip non-trade payloads.
+                        if item.get("message") and not item.get("txType"):
                             continue
                         sell = parse_account_sell(item)
                         if sell and on_sell:
