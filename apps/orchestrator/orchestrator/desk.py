@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,8 @@ from orchestrator.journal.store import JournalStore
 from orchestrator.models import MintCandidate
 from orchestrator.risk.manager import RiskManager, load_full_risk_limits
 from orchestrator.ws import events as ev
+
+log = logging.getLogger(__name__)
 
 Broadcast = Callable[[ev.OnyxEvent], Awaitable[None]]
 
@@ -701,6 +704,7 @@ class DeskRuntime:
                     await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
                     outcome = "filled"
                 except Exception as exc:
+                    log.warning("live buy failed %s: %s", mint[:12], exc)
                     await self._agent_step("executor", mint, "ERROR", 50, str(exc)[:120])
             else:
                 await self._agent_step("executor", mint, "NOT_CONFIGURED", 30, "SOLANA_PRIVATE_KEY")

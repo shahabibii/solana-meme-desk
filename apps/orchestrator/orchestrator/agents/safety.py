@@ -9,8 +9,7 @@ import httpx
 from orchestrator.config import Settings
 from orchestrator.models import SafetyReport
 
-SOL_MINT = "So11111111111111111111111111111111111111112"
-JUPITER_QUOTE = "https://quote-api.jup.ag/v6/quote"
+from orchestrator.execution.jupiter import SOL_MINT, jupiter_quote
 
 # Bonding-curve launches — mint authority + no Jupiter route is normal at create time.
 PUMP_SOURCES = frozenset({"pump", "sniper", "yellowstone", "fomo", "convergence", "copy"})
@@ -38,22 +37,13 @@ async def _rpc_get_mint_info(rpc: str, mint: str) -> dict | None:
 
 async def _jupiter_can_sell(mint: str, amount: int = 1_000_000) -> bool:
     """Tiny quote mint → SOL; no route ≈ honeypot (post-graduation tokens)."""
-    params = {
-        "inputMint": mint,
-        "outputMint": SOL_MINT,
-        "amount": str(amount),
-        "slippageBps": "5000",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(JUPITER_QUOTE, params=params)
-            if r.status_code == 400:
-                return False
-            r.raise_for_status()
-            data = r.json()
-            return bool(data.get("outAmount"))
-    except Exception:
-        return False
+    quote = await jupiter_quote(
+        input_mint=mint,
+        output_mint=SOL_MINT,
+        amount_raw=amount,
+        slippage_bps=5000,
+    )
+    return bool(quote and quote.get("outAmount"))
 
 
 def evaluate_safety(

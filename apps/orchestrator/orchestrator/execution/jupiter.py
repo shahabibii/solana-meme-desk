@@ -1,9 +1,10 @@
-"""Jupiter v6 swap execution for graduated / DEX copy trades."""
+"""Jupiter swap execution — lite-api v1 (quote-api.jup.ag v6 is sunset / DNS-dead)."""
 
 from __future__ import annotations
 
 import base64
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -13,8 +14,47 @@ from solders.transaction import VersionedTransaction
 log = logging.getLogger(__name__)
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
-JUPITER_QUOTE = "https://quote-api.jup.ag/v6/quote"
-JUPITER_SWAP = "https://quote-api.jup.ag/v6/swap"
+# v6 host no longer resolves from many hosts; use Jupiter lite swap v1.
+JUPITER_QUOTE = os.environ.get(
+    "JUPITER_QUOTE_URL", "https://lite-api.jup.ag/swap/v1/quote"
+)
+JUPITER_SWAP = os.environ.get(
+    "JUPITER_SWAP_URL", "https://lite-api.jup.ag/swap/v1/swap"
+)
+
+
+def _jupiter_headers() -> dict[str, str]:
+    key = os.environ.get("JUPITER_API_KEY")
+    return {"x-api-key": key} if key else {}
+
+
+async def jupiter_quote(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int,
+) -> dict[str, Any] | None:
+    """Return quote JSON or None if no route."""
+    params = {
+        "inputMint": input_mint,
+        "outputMint": output_mint,
+        "amount": str(amount_raw),
+        "slippageBps": str(slippage_bps),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(JUPITER_QUOTE, params=params, headers=_jupiter_headers())
+            if resp.status_code == 400:
+                return None
+            if resp.status_code != 200:
+                log.debug("jupiter quote %s: %s", resp.status_code, resp.text[:120])
+                return None
+            data = resp.json()
+            return data if data.get("outAmount") else None
+    except Exception as exc:
+        log.debug("jupiter quote error: %s", exc)
+        return None
 
 
 async def get_token_balance_raw(rpc_url: str, owner: str, mint: str) -> int:
@@ -59,11 +99,14 @@ async def jupiter_swap(
         "amount": str(amount_raw),
         "slippageBps": str(slippage_bps),
     }
+    headers = _jupiter_headers()
 
     async with httpx.AsyncClient(timeout=45.0) as client:
-        quote_resp = await client.get(JUPITER_QUOTE, params=params)
+        quote_resp = await client.get(JUPITER_QUOTE, params=params, headers=headers)
         if quote_resp.status_code != 200:
-            raise RuntimeError(f"Jupiter quote failed ({quote_resp.status_code}): {quote_resp.text[:200]}")
+            raise RuntimeError(
+                f"Jupiter quote failed ({quote_resp.status_code}): {quote_resp.text[:200]}"
+            )
         quote = quote_resp.json()
 
         swap_body = {
@@ -73,9 +116,11 @@ async def jupiter_swap(
             "dynamicComputeUnitLimit": True,
             "prioritizationFeeLamports": priority_fee_lamports,
         }
-        swap_resp = await client.post(JUPITER_SWAP, json=swap_body)
+        swap_resp = await client.post(JUPITER_SWAP, json=swap_body, headers=headers)
         if swap_resp.status_code != 200:
-            raise RuntimeError(f"Jupiter swap failed ({swap_resp.status_code}): {swap_resp.text[:200]}")
+            raise RuntimeError(
+                f"Jupiter swap failed ({swap_resp.status_code}): {swap_resp.text[:200]}"
+            )
         swap_data = swap_resp.json()
         tx_b64 = swap_data.get("swapTransaction")
         if not tx_b64:

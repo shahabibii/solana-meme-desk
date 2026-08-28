@@ -11,7 +11,7 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
 from orchestrator.config import Settings
-from orchestrator.execution.jupiter import SOL_MINT, get_token_balance_raw, jupiter_swap
+from orchestrator.execution.jupiter import SOL_MINT, get_token_balance_raw, jupiter_quote, jupiter_swap
 from orchestrator.feeds.helius_wallets import is_pump_venue
 
 log = logging.getLogger(__name__)
@@ -80,13 +80,32 @@ class LiveExecutor:
         return await self._trade("buy", mint, sol, denominated_in_sol=True)
 
     async def buy_for_venue(self, mint: str, sol: float, venue: str | None) -> dict[str, Any]:
-        if is_pump_venue(venue):
-            out = await self.buy(mint, sol)
-            out["venue_exec"] = "pumpportal"
+        pump_first = is_pump_venue(venue) or str(mint).lower().endswith("pump")
+        errors: list[str] = []
+
+        if pump_first:
+            try:
+                out = await self.buy(mint, sol)
+                out["venue_exec"] = "pumpportal"
+                return out
+            except Exception as exc:
+                errors.append(f"pump:{exc}")
+
+        try:
+            out = await self.jupiter_buy(mint, sol)
+            out["venue_exec"] = "jupiter"
             return out
-        out = await self.jupiter_buy(mint, sol)
-        out["venue_exec"] = "jupiter"
-        return out
+        except Exception as exc:
+            errors.append(f"jupiter:{exc}")
+            if not pump_first and str(mint).lower().endswith("pump"):
+                try:
+                    out = await self.buy(mint, sol)
+                    out["venue_exec"] = "pumpportal"
+                    return out
+                except Exception as exc2:
+                    errors.append(f"pump:{exc2}")
+
+        raise RuntimeError(" | ".join(str(e) for e in errors)[:240])
 
     async def jupiter_buy(self, mint: str, sol: float) -> dict[str, Any]:
         if not self.ready or not self._keypair:
