@@ -1,6 +1,6 @@
 # Wallets to mirror via PumpPortal subscribeAccountTrade.
 # Cope /fomo top-trader poll fills this list when COPE_API_KEY is set.
-# Add known profitable wallets manually as fallback.
+# Manual wallets also loaded from config/fomo_wallets.yaml (handle → address map).
 
 copy:
   enabled: true
@@ -10,4 +10,18 @@ copy:
   copy_boost: 25
   min_trader_win_rate: 0.55
 
+# PumpPortal subscribeAccountTrade keys (full base58, >= 32 chars).
+# Populate via fomo_wallets.yaml or POST /api/copy/wallets after clicking Copy on fomo profiles.
 wallets: []
+
+# Handle → verified SOL wallet (from fomo.family profile screenshots, Aug 27 2026).
+# Truncated in UI — paste full addresses into fomo_wallets.yaml to activate copy-stream.
+wallets_with_handles:
+  change: null           # J9WiAZKf8J…sDjdqYga
+  PoorGoat_: null         # HDixbrzwL…pucSXN3o
+  Rowdy: null             # CzU8MaRcwv…NFE4ybb7
+  Salem1299534: null      # 2yXwy5Dsa1…3p5VTW3V
+  MEADGod: null           # H2uRkYPzvX…3SECaRw9
+  unipcs: null            # no screenshot — click Copy on fomo.family/profile/unipcs
+  DumbCrayonEater: null   # 5FGoPPj1nL…uahMrp8V
+  ether_monk: null        # 2xUbYAVq1o…vVbwmYw8
