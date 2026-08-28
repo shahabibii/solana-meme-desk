@@ -6,7 +6,7 @@ helius_wallet_watch: true
 # Cope is DNS-dead; poll rarely so we don't spam logs (manual wallets are primary)
 cope_poll_sec: 600
 # Helius address poller — primary signal path while Cope is down
-helius_poll_sec: 6
+helius_poll_sec: 20
 
 # Only these sources enter the agent pipeline when fomo_copy_mode is on
 allowed_sources:

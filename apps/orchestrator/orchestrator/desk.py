@@ -95,6 +95,7 @@ class DeskRuntime:
         self._copy_signals_enqueued = 0
         self._helius_webhook_state: dict | None = None
         self._helius_poller_seen: dict[str, set[str]] = {}
+        self._rpc_poller_seen: dict[str, set[str]] = {}
         self._last_webhook_sync = 0.0
         self._cope_backoff_until = 0.0
         self._wallet_mint_cache: dict[str, dict[str, float]] = {}
@@ -705,12 +706,20 @@ class DeskRuntime:
         if self.cope.enabled:
             if handle:
                 await self.cope.sync_fomo(handle)
-            resolved = await self.cope.resolve_handles()
-            if resolved:
-                handles = resolved
-            for c in await self.cope.poll_candidates():
-                await self.enqueue(c)
-                seeded += 1
+            # Skip Cope seeding when API is unreachable (DNS/quota) — manual wallets drive copy.
+            health = await self.cope.health()
+            if health.get("reachable"):
+                resolved = await self.cope.resolve_handles()
+                if resolved:
+                    handles = resolved
+                for c in await self.cope.poll_candidates():
+                    await self.enqueue(c)
+                    seeded += 1
+            else:
+                log.warning(
+                    "bootstrap: cope unreachable — using manual wallets only (%s)",
+                    (health.get("error") or "")[:100],
+                )
 
         wallets = await self.refresh_copy_wallets()
         manual_ok = len(wallets) > 0
@@ -1435,17 +1444,45 @@ async def start_desk(
             async def _on_polled(event: dict) -> None:
                 await desk.on_helius_wallet_trade(event, get_mode())
 
+            def _status(status: str, detail: str) -> None:
+                if on_feed_heartbeat:
+                    on_feed_heartbeat("helius_poller", status=status, detail=detail)
+
             await poll_wallet_trades(
                 api_key=settings.helius_api_key or "",
                 wallets_getter=lambda: desk._copy_wallets,
                 on_trade=_on_polled,
                 seen=desk._helius_poller_seen,
                 running=running,
-                interval_sec=max(4.0, float(feed_cfg.helius_poll_sec or 6.0)),
-                limit=30,
+                interval_sec=max(8.0, float(feed_cfg.helius_poll_sec or 12.0)),
+                limit=20,
+                on_status=_status,
             )
 
         tasks.append(asyncio.create_task(_helius_poll_loop()))
+
+        async def _rpc_poll_loop() -> None:
+            from orchestrator.feeds.rpc_wallet_poller import poll_wallet_trades_rpc
+
+            async def _on_polled(event: dict) -> None:
+                await desk.on_helius_wallet_trade(event, get_mode())
+
+            def _status(status: str, detail: str) -> None:
+                if on_feed_heartbeat:
+                    on_feed_heartbeat("rpc_poller", status=status, detail=detail)
+
+            await poll_wallet_trades_rpc(
+                rpc_url=settings.effective_rpc_url or "",
+                wallets_getter=lambda: desk._copy_wallets,
+                on_trade=_on_polled,
+                seen=desk._rpc_poller_seen,
+                running=running,
+                interval_sec=8.0,
+                limit=12,
+                on_status=_status,
+            )
+
+        tasks.append(asyncio.create_task(_rpc_poll_loop()))
 
     if settings.mock_stream:
         from orchestrator.agents.pipeline import mock_stream_loop

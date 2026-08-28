@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -25,6 +24,7 @@ async def poll_wallet_trades(
     running: Callable[[], bool],
     interval_sec: float = 12.0,
     limit: int = 25,
+    on_status: Callable[[str, str], None] | None = None,
 ) -> None:
     """Poll recent txs per watched wallet; parse buys/sells webhooks may miss."""
     if not api_key:
@@ -34,8 +34,16 @@ async def poll_wallet_trades(
 
     url_tpl = HELIUS_ADDR_TX + f"?api-key={api_key}&limit={limit}"
     bootstrapped = False
+    rate_limited_until = 0.0
 
     while running():
+        now = asyncio.get_event_loop().time()
+        if now < rate_limited_until:
+            if on_status:
+                on_status("error", "helius_rate_limited")
+            await asyncio.sleep(min(60.0, rate_limited_until - now + 1))
+            continue
+
         wallets = sorted({w for w in wallets_getter() if w})
         watched = set(wallets)
         if not watched:
@@ -48,7 +56,23 @@ async def poll_wallet_trades(
                         break
                     try:
                         resp = await client.get(url_tpl.format(address=addr))
+                        if resp.status_code == 429 or "max usage" in (resp.text or "").lower():
+                            log.warning(
+                                "helius poller rate-limited/exhausted — backing off 15m"
+                            )
+                            rate_limited_until = asyncio.get_event_loop().time() + 900
+                            if on_status:
+                                on_status("error", "helius_rate_limited")
+                            break
                         if resp.status_code != 200:
+                            log.warning(
+                                "helius poller %s HTTP %s: %s",
+                                addr[:8],
+                                resp.status_code,
+                                (resp.text or "")[:80],
+                            )
+                            if on_status:
+                                on_status("error", f"http_{resp.status_code}")
                             continue
                         txs = resp.json()
                         if not isinstance(txs, list):
@@ -79,10 +103,12 @@ async def poll_wallet_trades(
                                     str(parsed.get("mint", ""))[:8],
                                     sig[:16],
                                 )
+                                if on_status:
+                                    on_status("ok", f"helius · {len(wallets)} wallets")
                                 await on_trade(parsed)
                     except Exception as exc:
                         log.debug("helius poller %s: %s", addr[:8], exc)
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(0.25)
             bootstrapped = True
         except asyncio.CancelledError:
             raise
