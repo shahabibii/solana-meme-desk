@@ -442,20 +442,23 @@ async def helius_webhook(
         body = await request.json()
     except Exception:
         raise HTTPException(400, detail="Invalid JSON body")
-    from orchestrator.feeds.helius_wallets import parse_helius_swap
+    from orchestrator.feeds.helius_wallets import normalize_webhook_events, parse_helius_swap
 
-    events = body if isinstance(body, list) else [body]
+    events = normalize_webhook_events(body)
     watched = set(_desk._copy_wallets)
     handled = 0
+    received = 0
     for raw in events:
         if not isinstance(raw, dict):
             continue
+        received += 1
+        _sniper_health.record_ingest("helius_wallets")
         parsed = parse_helius_swap(raw, watched)
         if not parsed:
             continue
         handled += 1
         await _desk.on_helius_wallet_trade(parsed, _desk_mode)
-    return {"ok": True, "handled": handled}
+    return {"ok": True, "received": received, "handled": handled}
 
 
 @app.post("/api/helius/sync-webhook")
