@@ -93,6 +93,7 @@ class DeskRuntime:
         self._helius_poller_seen: dict[str, set[str]] = {}
         self._wallet_mint_cache: dict[str, dict[str, float]] = {}
         self._fomo_relay_seen: set[str] = set()
+        self._mirror_sell_seen: set[str] = set()
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
@@ -280,6 +281,14 @@ class DeskRuntime:
             return
         trader = str(event.get("trader") or "")
         symbol = str(event.get("symbol") or "COPY")
+        mirrored = self._mirror_sell_seen
+        wave_key = f"{mint}:{trader}"
+        if wave_key in mirrored:
+            return
+        mirrored.add(wave_key)
+        if len(mirrored) > 2000:
+            mirrored.clear()
+
         sell_count = self._copy_tracker.record_sell(mint, trader)
         fraction = self._copy_tracker.mirror_sell_fraction(sell_count)
         if fraction <= 0:
@@ -349,6 +358,7 @@ class DeskRuntime:
                 await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
                 if fraction >= 1.0:
                     self._live_tracks.pop(mint, None)
+                    self._mirror_sell_seen.discard(f"{mint}:{trader}")
                 else:
                     track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
                 if self._on_alert:
