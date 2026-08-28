@@ -32,6 +32,12 @@ export type RecentFill = {
   ts: string;
 };
 
+export type CopyWatchEntry = {
+  handle: string;
+  wallet: string;
+  wallet_short: string;
+};
+
 export type Position = {
   mint: string;
   symbol: string;
@@ -62,6 +68,7 @@ type DeskState = {
   fomoCopyMode: boolean;
   copyWalletCount: number;
   fomoFollowCount: number;
+  copyWatchlist: CopyWatchEntry[];
   copeReachable: boolean | null;
   copeError: string | null;
   onChainSol: number | null;
@@ -115,6 +122,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   fomoCopyMode: false,
   copyWalletCount: 0,
   fomoFollowCount: 0,
+  copyWatchlist: [],
   copeReachable: null,
   copeError: null,
   onChainSol: null,
@@ -148,8 +156,13 @@ export const useDesk = create<DeskState>((set, get) => ({
       set({ learnerWeights: p.learner_weights as Record<string, number> });
     if (typeof p.fomo_enabled === "boolean") set({ fomoEnabled: p.fomo_enabled });
     if (typeof p.fomo_copy_mode === "boolean") set({ fomoCopyMode: p.fomo_copy_mode });
-    const ct = p.copy_trading as { wallets?: number; cope_error?: string | null } | undefined;
+    const ct = p.copy_trading as {
+      wallets?: number;
+      cope_error?: string | null;
+      copy_watchlist?: CopyWatchEntry[];
+    } | undefined;
     if (ct && typeof ct.wallets === "number") set({ copyWalletCount: ct.wallets });
+    if (ct?.copy_watchlist) set({ copyWatchlist: ct.copy_watchlist });
     if (Array.isArray(p.fomo_follow_handles))
       set({ fomoFollowCount: p.fomo_follow_handles.length });
     else if (ct && typeof ct.manual_follows === "number")

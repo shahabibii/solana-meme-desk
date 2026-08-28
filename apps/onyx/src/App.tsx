@@ -467,18 +467,25 @@ export default function App() {
         try {
           const r = await bootstrapFomoCopy();
           desk.applyStatus(await fetchStatus());
+          const walletCount = Number(r.wallets ?? desk.copyWalletCount ?? 0);
           const err =
             (r.cope_error as string | undefined) ||
             ((r.sync as { error?: string } | undefined)?.error);
-          if (err) {
+          if (walletCount > 0) {
             notify(
-              `Fomo sync failed: ${err}. Cope API (api.cope.capital) is the bridge to fomo — try again later or paste wallets manually.`
+              r.cope_offline
+                ? `${walletCount} wallets watching. Cope is offline — manual list is active.`
+                : `Fomo sync: ${walletCount} wallets, ${Number(r.seeded_candidates ?? 0)} candidates`
             );
             return;
           }
-          notify(
-            `Fomo sync: ${Number(r.handles ?? r.wallets ?? 0)} follows, ${Number(r.wallets ?? 0)} wallets, ${Number(r.seeded_candidates ?? 0)} candidates`
-          );
+          if (err) {
+            notify(
+              `Fomo sync failed: ${err}. Paste wallet addresses manually or try again when Cope is back.`
+            );
+            return;
+          }
+          notify(`Fomo sync: ${Number(r.handles ?? 0)} follows, 0 wallets resolved`);
         } catch (e) {
           notify(e instanceof Error ? e.message : "Fomo sync failed");
         } finally {
@@ -552,6 +559,7 @@ export default function App() {
           fomoCopyMode={desk.fomoCopyMode}
           copyWalletCount={desk.copyWalletCount}
           fomoFollowCount={desk.fomoFollowCount}
+          copyWatchlist={desk.copyWatchlist}
           copeReachable={desk.copeReachable}
         />
 
@@ -633,10 +641,10 @@ export default function App() {
         </p>
       )}
 
-      {desk.fomoCopyMode && desk.copeReachable === false && desk.fomoFollowCount > 0 && (
+      {desk.fomoCopyMode && desk.copeReachable === false && desk.copyWalletCount > 0 && (
         <p className="mode-banner cope-banner" role="status">
-          Cope API offline — {desk.fomoFollowCount} fomo follows loaded. Copy signals resume
-          automatically when Cope reconnects.
+          Cope offline — {desk.copyWalletCount} wallets watching via PumpPortal. Sync Fomo is
+          optional until Cope returns.
         </p>
       )}
 

@@ -23,6 +23,7 @@ from orchestrator.config_loaders import (
     load_desk_feed_config,
     load_fomo_follows_config,
     load_fomo_wallets,
+    load_fomo_wallets_by_handle,
 )
 from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook, RiskLimits
@@ -54,6 +55,7 @@ class DeskRuntime:
         copy_cfg: CopyConfig,
         feed_cfg: DeskFeedConfig,
         fomo_follows: FomoFollowsConfig,
+        wallets_by_handle: dict[str, str] | None = None,
         get_paused: Callable[[], bool] | None = None,
         on_alert: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
@@ -66,6 +68,7 @@ class DeskRuntime:
         self.copy_cfg = copy_cfg
         self.feed_cfg = feed_cfg
         self.fomo_follows = fomo_follows
+        self._wallets_by_handle = dict(wallets_by_handle or {})
         self.cope = CopeClient(settings.cope_api_key)
         if fomo_follows.handles:
             self.cope.set_manual_handles(fomo_follows.handles)
@@ -242,30 +245,55 @@ class DeskRuntime:
 
     async def bootstrap_fomo_copy(self) -> dict:
         """Sync fomo follows, resolve wallets, seed the pipeline from Cope."""
-        if not self.cope.enabled:
-            return {"ok": False, "reason": "COPE_API_KEY not configured"}
         handle = self.settings.fomo_handle
-        if handle:
-            await self.cope.sync_fomo(handle)
-        handles = await self.cope.resolve_handles()
-        wallets = await self.refresh_copy_wallets()
+        handles = list(self.fomo_follows.handles)
         seeded = 0
-        for c in await self.cope.poll_candidates():
-            await self.enqueue(c)
-            seeded += 1
+        cope_error: str | None = None
+
+        if self.cope.enabled:
+            if handle:
+                await self.cope.sync_fomo(handle)
+            resolved = await self.cope.resolve_handles()
+            if resolved:
+                handles = resolved
+            for c in await self.cope.poll_candidates():
+                await self.enqueue(c)
+                seeded += 1
+            cope_error = self.cope.last_error
+
+        wallets = await self.refresh_copy_wallets()
+        manual_ok = len(wallets) > 0
         return {
-            "ok": True,
+            "ok": manual_ok or seeded > 0,
             "fomo_handle": handle,
             "handles": len(handles),
             "manual_follows": len(self.fomo_follows.handles),
             "wallets": len(wallets),
             "seeded_candidates": seeded,
             "fomo_copy_mode": self.feed_cfg.fomo_copy_mode,
-            "follows": handles or list(self.fomo_follows.handles),
-            "cope_error": self.cope.last_error,
+            "follows": handles,
+            "copy_watchlist": self._copy_watchlist(),
+            "manual_wallets_active": manual_ok,
+            "cope_offline": bool(cope_error and manual_ok),
+            "cope_error": cope_error if not manual_ok else None,
         }
 
+    def _copy_watchlist(self) -> list[dict[str, str]]:
+        wallet_to_handle = {w: h for h, w in self._wallets_by_handle.items()}
+        watchlist: list[dict[str, str]] = []
+        for w in self._copy_wallets:
+            handle = wallet_to_handle.get(w) or "?"
+            watchlist.append(
+                {
+                    "handle": handle,
+                    "wallet": w,
+                    "wallet_short": f"{w[:4]}…{w[-4:]}",
+                }
+            )
+        return watchlist
+
     def status_extra(self) -> dict:
+        watchlist = self._copy_watchlist()
         base = {
             "fomo_copy_mode": self.feed_cfg.fomo_copy_mode,
             "pump_launch_feed": self.feed_cfg.pump_launch_feed,
@@ -278,7 +306,9 @@ class DeskRuntime:
                 "fomo_handles": list(self.cope._handles or self.fomo_follows.handles)[:20],
                 "manual_follows": len(self.fomo_follows.handles),
                 "configured_wallets": len(self.copy_cfg.wallets),
-                "cope_error": self.cope.last_error,
+                "copy_watchlist": watchlist,
+                "manual_wallets_active": len(self._copy_wallets) > 0,
+                "cope_error": self.cope.last_error if not self._copy_wallets else None,
                 "mirror_sell": bool(
                     self.feed_cfg.copy_improvements and self.feed_cfg.copy_improvements.mirror_sell_enabled
                 ),
@@ -727,8 +757,20 @@ async def start_desk(
             pass
     if not settings.fomo_handle and fomo_follows.owner:
         settings.fomo_handle = fomo_follows.owner
+    wallets_by_handle = load_fomo_wallets_by_handle(settings.config_dir)
     desk = DeskRuntime(
-        settings, paper, live, journal, broadcast, risk, copy_cfg, feed_cfg, fomo_follows, get_paused, on_alert
+        settings,
+        paper,
+        live,
+        journal,
+        broadcast,
+        risk,
+        copy_cfg,
+        feed_cfg,
+        fomo_follows,
+        wallets_by_handle,
+        get_paused,
+        on_alert,
     )
     await desk.refresh_copy_wallets()
     if feed_cfg.fomo_copy_mode:

@@ -31,6 +31,7 @@ export default function Sidebar({
   fomoCopyMode,
   copyWalletCount,
   fomoFollowCount,
+  copyWatchlist,
   copeReachable,
 }: {
   equitySol: number;
@@ -51,6 +52,7 @@ export default function Sidebar({
   fomoCopyMode?: boolean;
   copyWalletCount?: number;
   fomoFollowCount?: number;
+  copyWatchlist?: { handle: string; wallet: string; wallet_short: string }[];
   copeReachable?: boolean | null;
 }) {
   const waveRef = useRef<HTMLCanvasElement>(null);
@@ -203,7 +205,7 @@ export default function Sidebar({
         <p className="deskctl-hint">
           {fomoCopyMode
             ? copeReachable === false
-              ? `${copyWalletCount ?? 0} wallets · ${fomoFollowCount ?? 0} follows queued`
+              ? `${copyWalletCount ?? 0} wallets loaded · Cope offline`
               : `Fomo Copy · ${copyWalletCount ?? 0} wallets · paper only`
             : paused
               ? "Stopped — no new buys. Exits still run."
@@ -212,6 +214,28 @@ export default function Sidebar({
                 : "Arms live + runs 24/7 on Fly."}
         </p>
       </div>
+
+      {fomoCopyMode && (copyWatchlist?.length ?? 0) > 0 && (
+        <div className="sidecard watchlist">
+          <div className="ct">
+            <i />
+            Copy Watchlist
+            <span className="tail" />
+            <span className="badge">{copyWatchlist?.length ?? 0}</span>
+          </div>
+          {(copyWatchlist ?? []).map((w) => (
+            <div className="wrow watch" key={w.wallet} title={w.wallet}>
+              <span className="hdl">@{w.handle}</span>
+              <span className="mut">{w.wallet_short}</span>
+            </div>
+          ))}
+          {copeReachable === false && (
+            <p className="deskctl-hint" style={{ marginTop: 6 }}>
+              Manual wallets active — Sync Fomo optional while Cope is down.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="sidecard">
         <div className="ct">

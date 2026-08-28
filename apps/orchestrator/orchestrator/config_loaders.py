@@ -90,18 +90,29 @@ def load_fomo_follows_config(config_dir: Path) -> FomoFollowsConfig:
     )
 
 
+def load_fomo_wallets_by_handle(config_dir: Path) -> dict[str, str]:
+    """Handle → full SOL address from fomo_wallets.yaml and copy_wallets.yaml."""
+    merged: dict[str, str] = {}
+    for name in ("fomo_wallets.yaml", "copy_wallets.yaml"):
+        path = config_dir / name
+        if not path.exists():
+            continue
+        raw = yaml.safe_load(path.read_text()) or {}
+        section = raw.get("wallets_by_handle") or raw.get("wallets_with_handles") or {}
+        for handle, val in section.items():
+            h = str(handle).strip().lstrip("@")
+            w = str(val).strip()
+            if h and len(w) >= 32:
+                merged[h] = w
+    return merged
+
+
 def load_fomo_wallets(config_dir: Path) -> list[str]:
     """SOL wallets keyed by fomo handle — paste full addresses in fomo_wallets.yaml."""
-    path = config_dir / "fomo_wallets.yaml"
-    if not path.exists():
-        return []
-    raw = yaml.safe_load(path.read_text()) or {}
-    section = raw.get("wallets_by_handle") or {}
     wallets: list[str] = []
     seen: set[str] = set()
-    for val in section.values():
-        w = str(val).strip()
-        if len(w) >= 32 and w not in seen:
+    for w in load_fomo_wallets_by_handle(config_dir).values():
+        if w not in seen:
             seen.add(w)
             wallets.append(w)
     return wallets
