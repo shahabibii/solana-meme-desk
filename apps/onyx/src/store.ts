@@ -18,7 +18,7 @@ export type AgentState = {
   blockReasons?: string[];
 };
 
-export type FeedKind = "cand" | "blk" | "fill" | "mode" | "ag";
+export type FeedKind = "cand" | "blk" | "fill" | "mode" | "ag" | "watch" | "skip";
 
 export type FeedItem = {
   id: string;
@@ -198,10 +198,17 @@ export const useDesk = create<DeskState>((set, get) => ({
       const upnlChart = s.positions
         .map((p) => p.upnl_pct)
         .filter((v): v is number => v != null);
+      const tradeIds = new Set(fromFeed.map((f) => f.id));
+      const liveOnly = s.feed.filter((f) => !f.id.startsWith("trade-"));
+      const feed =
+        fromFeed.length > 0
+          ? mergeFeed(mergeFeed(fromFeed, liveOnly), s.feed.filter((f) => tradeIds.has(f.id)))
+          : mergeFeed(s.feed, fromFeed);
       return {
         recentTrades: rows,
-        feed: mergeFeed(s.feed, fromFeed),
-        recentFills: mergeFills(s.recentFills, fromFills),
+        feed,
+        recentFills:
+          fromFills.length > 0 ? mergeFills([], fromFills) : mergeFills(s.recentFills, fromFills),
         equityPoints: equityPoints.length > 0 ? equityPoints : s.equityPoints,
         chartPoints:
           upnlChart.length >= 2

@@ -50,10 +50,39 @@ def mint_blocked(mint: str, reasons: list[str]) -> OnyxEvent:
     return OnyxEvent(type="mint.blocked", payload={"mint": mint, "reasons": reasons})
 
 
-def trade_fill(side: str, mint: str, sol: float, mode: str) -> OnyxEvent:
+def trade_fill(
+    side: str, mint: str, sol: float, mode: str, *, symbol: str = "???"
+) -> OnyxEvent:
     return OnyxEvent(
         type="trade.fill",
-        payload={"side": side, "mint": mint, "sol": sol, "mode": mode},
+        payload={"side": side, "mint": mint, "sol": sol, "mode": mode, "symbol": symbol},
+    )
+
+
+def copy_watch(
+    mint: str,
+    *,
+    trader: str = "",
+    handle: str = "",
+    trader_sol: float | None = None,
+    via: str = "copy",
+) -> OnyxEvent:
+    return OnyxEvent(
+        type="copy.watch",
+        payload={
+            "mint": mint,
+            "trader": trader,
+            "handle": handle,
+            "trader_sol": trader_sol,
+            "via": via,
+        },
+    )
+
+
+def copy_skip(mint: str, reason: str, *, trader: str = "", convergence: int = 0) -> OnyxEvent:
+    return OnyxEvent(
+        type="copy.skip",
+        payload={"mint": mint, "reason": reason, "trader": trader, "convergence": convergence},
     )
 
 

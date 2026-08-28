@@ -63,6 +63,7 @@ class DeskRuntime:
         wallets_by_handle: dict[str, str] | None = None,
         get_paused: Callable[[], bool] | None = None,
         on_alert: Callable[[str], Awaitable[None]] | None = None,
+        on_ingest: Callable[[str], None] | None = None,
     ) -> None:
         self.settings = settings
         self.paper = paper
@@ -102,6 +103,13 @@ class DeskRuntime:
         self._last_equity_journal_ts = 0.0
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
+        self._on_ingest = on_ingest
+
+    def _trader_handle(self, trader: str) -> str:
+        for handle, wallet in self._wallets_by_handle.items():
+            if wallet == trader:
+                return handle
+        return trader[:8] if trader else "?"
 
     def _save_live_tracks(self) -> None:
         try:
@@ -159,7 +167,6 @@ class DeskRuntime:
             except Exception as exc:
                 log.warning("import %s failed: %s", token.mint[:12], exc)
 
-        on_chain_mints = {t.mint for t in await list_wallet_tokens(rpc, owner)}
         stale = [m for m in list(self._live_tracks.keys()) if m not in on_chain_mints]
         for mint in stale:
             log.warning("dropping stale live track (zero on-chain balance): %s", mint[:12])
@@ -239,7 +246,7 @@ class DeskRuntime:
         elif track:
             track["entry_sol"] = entry_sol * (1.0 - fraction)
         self._save_live_tracks()
-        await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
+        await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live", symbol=str((track or {}).get("symbol") or mint[:8])))
         await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.LIVE)}))
         return {
             "mint": mint,
@@ -376,8 +383,20 @@ class DeskRuntime:
             imp = self.feed_cfg.copy_improvements
             if imp and imp.require_convergence_for_copy:
                 if count < imp.convergence_min_wallets:
+                    await self.broadcast(
+                        ev.copy_skip(
+                            mint,
+                            f"need_convergence({count}/{imp.convergence_min_wallets})",
+                            trader=trader,
+                            convergence=count,
+                        )
+                    )
                     return
             if not self._copy_tracker.should_enqueue_buy(mint, is_new_trader=is_new):
+                status = self._copy_tracker._mint_status.get(mint, "dedup")
+                await self.broadcast(
+                    ev.copy_skip(mint, str(status), trader=trader, convergence=count)
+                )
                 return
         else:
             if mint in self._seen or mint in self._processing:
@@ -419,6 +438,21 @@ class DeskRuntime:
 
     async def _on_copy_trade(self, candidate: MintCandidate) -> None:
         self._copy_signals_seen += 1
+        if self._on_ingest:
+            via = str(candidate.meta.get("via") or "copy_stream")
+            worker = "helius_poller" if "helius" in via else "copy_stream"
+            self._on_ingest(worker)
+        trader = str(candidate.meta.get("trader") or "")
+        trader_sol = candidate.meta.get("trader_sol")
+        await self.broadcast(
+            ev.copy_watch(
+                candidate.mint,
+                trader=trader,
+                handle=self._trader_handle(trader),
+                trader_sol=float(trader_sol) if trader_sol is not None else None,
+                via=str(candidate.meta.get("via") or "copy"),
+            )
+        )
         await self.enqueue(candidate)
 
     async def on_helius_wallet_trade(self, event: dict, mode: DeskMode) -> None:
@@ -625,7 +659,7 @@ class DeskRuntime:
                         "signature": sig,
                     },
                 )
-                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
+                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live", symbol=str((track or {}).get("symbol") or mint[:8])))
                 if fraction >= 1.0:
                     self._live_tracks.pop(mint, None)
                     self._mirror_sell_seen.discard(f"{mint}:{trader}")
@@ -932,7 +966,7 @@ class DeskRuntime:
                         },
                     )
                     self.journal.record_equity(self.paper.equity_sol)
-                    await self.broadcast(ev.trade_fill("buy", mint, sol, "paper"))
+                    await self.broadcast(ev.trade_fill("buy", mint, sol, "paper", symbol=candidate.symbol))
                     if self._on_alert:
                         await self._on_alert(
                             f"BUY {candidate.symbol} · {sol:.3f} SOL · paper · {candidate.source}"
@@ -977,7 +1011,7 @@ class DeskRuntime:
                         "tp_hit": set(),
                     }
                     self._save_live_tracks()
-                    await self.broadcast(ev.trade_fill("buy", mint, sol, "live"))
+                    await self.broadcast(ev.trade_fill("buy", mint, sol, "live", symbol=candidate.symbol))
                     if self._on_alert:
                         await self._on_alert(
                             f"BUY {candidate.symbol} · {sol:.3f} SOL · LIVE · {candidate.source}"
@@ -1101,7 +1135,7 @@ class DeskRuntime:
                         detail={"exit": exit_reason},
                     )
                     self.journal.record_equity(self.paper.equity_sol)
-                    await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "paper"))
+                    await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "paper", symbol=str(p.symbol)))
                     await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(DeskMode.PAPER)}))
 
     async def _monitor_live(self) -> None:
@@ -1160,7 +1194,7 @@ class DeskRuntime:
                     source=str(track.get("source") or "pump"),
                     detail={"exit": exit_reason, "signature": sig, **result},
                 )
-                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
+                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live", symbol=str((track or {}).get("symbol") or mint[:8])))
                 if fraction >= 1.0:
                     self._live_tracks.pop(mint, None)
                 else:
@@ -1207,6 +1241,7 @@ async def start_desk(
     on_feed_heartbeat: Callable[..., None] | None = None,
     get_paused: Callable[[], bool] | None = None,
     on_alert: Callable[[str], Awaitable[None]] | None = None,
+    on_ingest: Callable[[str], None] | None = None,
 ) -> tuple[DeskRuntime, list[asyncio.Task]]:
     full = load_full_risk_limits(settings.config_dir)
     paper.limits = full.paper
@@ -1245,6 +1280,7 @@ async def start_desk(
         wallets_by_handle,
         get_paused,
         on_alert,
+        on_ingest,
     )
     await desk.refresh_copy_wallets()
     if feed_cfg.helius_wallet_watch and settings.helius_api_key:

@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI):
         on_feed_heartbeat=_sniper_health.touch,
         get_paused=lambda: _controls.paused,
         on_alert=_alert if settings.alert_webhook_url else None,
+        on_ingest=_sniper_health.record_ingest,
     )
     yield
     _running = False

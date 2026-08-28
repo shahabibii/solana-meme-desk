@@ -70,8 +70,31 @@ function feedFromEvent(data: Record<string, unknown>): FeedItem | null {
         kind: "fill",
         sev: "live",
         mint: String(data.mint),
-        text: `${String(data.side).toUpperCase()} ${data.symbol ?? ""} ${data.sol} ◎`,
-        sub: `${data.mode} · pumpportal`,
+        text: `${String(data.side).toUpperCase()} $${data.symbol ?? String(data.mint).slice(0, 6)} · ${Number(data.sol).toFixed(3)} ◎`,
+        sub: `${data.mode} · fill`,
+      };
+    case "copy.watch":
+      return {
+        id,
+        ts,
+        kind: "watch",
+        sev: "info",
+        mint: String(data.mint),
+        text: `@${data.handle ?? "?"} bought ${String(data.mint).slice(0, 8)}…`,
+        sub:
+          data.trader_sol != null
+            ? `${Number(data.trader_sol).toFixed(3)} ◎ · ${data.via ?? "copy"}`
+            : String(data.via ?? "copy"),
+      };
+    case "copy.skip":
+      return {
+        id,
+        ts,
+        kind: "skip",
+        sev: "warn",
+        mint: String(data.mint),
+        text: `Copy skip ${String(data.mint).slice(0, 8)}…`,
+        sub: String(data.reason ?? "filtered"),
       };
     case "agent.done":
       return {
@@ -239,10 +262,11 @@ export default function App() {
           if (data.mint) desk.selectMint(String(data.mint));
         }
         if (data.type === "trade.fill") {
+          const sym = String(data.symbol ?? data.mint ?? "???").slice(0, 12);
           say(`${data.side} fill ${data.sol} SOL`);
           desk.pushFill({
-            id: `${data.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            symbol: String(data.symbol ?? "???"),
+            id: `fill-${data.mint}-${data.ts ?? Date.now()}`,
+            symbol: sym.startsWith("$") ? sym : sym,
             sol: Number(data.sol ?? 0),
             side: String(data.side ?? "buy"),
             ts: String(data.ts ?? new Date().toISOString()),

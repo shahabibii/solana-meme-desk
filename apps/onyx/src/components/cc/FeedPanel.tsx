@@ -6,6 +6,8 @@ const ICON: Record<string, string> = {
   fill: "◎",
   mode: "⚡",
   ag: "⬡",
+  watch: "👁",
+  skip: "⊘",
 };
 
 export default function FeedPanel({
