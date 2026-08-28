@@ -21,6 +21,7 @@ from orchestrator.config_loaders import (
     load_copy_config,
     load_desk_feed_config,
     load_fomo_follows_config,
+    load_fomo_wallets,
 )
 from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook, RiskLimits
@@ -173,6 +174,7 @@ class DeskRuntime:
                 "fomo_handle": self.settings.fomo_handle,
                 "fomo_handles": list(self.cope._handles)[:20],
                 "manual_follows": len(self.fomo_follows.handles),
+                "configured_wallets": len(self.copy_cfg.wallets),
                 "cope_error": self.cope.last_error,
             },
             "daily_loss_sol": {
@@ -568,6 +570,9 @@ async def start_desk(
     copy_cfg = load_copy_config(settings.config_dir, settings.data_dir)
     feed_cfg = load_desk_feed_config(settings.config_dir)
     fomo_follows = load_fomo_follows_config(settings.config_dir)
+    for w in load_fomo_wallets(settings.config_dir):
+        if w not in copy_cfg.wallets:
+            copy_cfg.wallets.append(w)
     if settings.fomo_copy_mode:
         feed_cfg.fomo_copy_mode = True
         feed_cfg.pump_launch_feed = settings.pump_launch_feed

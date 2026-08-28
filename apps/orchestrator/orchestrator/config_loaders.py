@@ -87,6 +87,23 @@ def load_fomo_follows_config(config_dir: Path) -> FomoFollowsConfig:
     )
 
 
+def load_fomo_wallets(config_dir: Path) -> list[str]:
+    """SOL wallets keyed by fomo handle — paste full addresses in fomo_wallets.yaml."""
+    path = config_dir / "fomo_wallets.yaml"
+    if not path.exists():
+        return []
+    raw = yaml.safe_load(path.read_text()) or {}
+    section = raw.get("wallets_by_handle") or {}
+    wallets: list[str] = []
+    seen: set[str] = set()
+    for val in section.values():
+        w = str(val).strip()
+        if len(w) >= 32 and w not in seen:
+            seen.add(w)
+            wallets.append(w)
+    return wallets
+
+
 def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
     path = config_dir / "desk.yaml"
     if not path.exists():

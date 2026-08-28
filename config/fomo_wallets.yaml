@@ -1,0 +1,12 @@
+# Verified SOL wallets from fomo.family profiles (click Copy on each profile).
+# Used for PumpPortal copy-stream when Cope API is offline.
+
+wallets_by_handle:
+  change: ""          # J9WiAZKf8J...sDjdqYga
+  PoorGoat_: ""       # HDixbrzwL...pucSXN3o
+  Rowdy: ""           # CzU8MaRcwv...NFE4ybb7
+  Salem1299534: ""    # 2yXwy5Dsa1...3p5VTW3V
+  MEADGod: ""         # H2uRkYPzvX...3SECaRw9
+  unipcs: ""          # paste from fomo profile
+  DumbCrayonEater: "" # 5FGoPPj1nL...uahMrp8V
+  ether_monk: ""      # 2xUbYAVq1o...vVbwmYw8
