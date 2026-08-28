@@ -105,7 +105,10 @@ def evaluate_safety(
     if pump_path:
         passed = (
             score >= min_score
-            and checks.get("mint_account", False)
+            and (
+                checks.get("mint_account", False)
+                or (source == "copy" and can_sell)
+            )
             and "freeze_authority_active" not in reasons
         )
     else:

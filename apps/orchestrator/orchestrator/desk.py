@@ -88,7 +88,8 @@ class DeskRuntime:
         self._copy_signals_enqueued = 0
         self._helius_webhook_state: dict | None = None
         self._helius_poller_seen: dict[str, set[str]] = {}
-        self._wallet_mint_cache: dict[str, set[str]] = {}
+        self._wallet_mint_cache: dict[str, dict[str, float]] = {}
+        self._fomo_relay_seen: set[str] = set()
         self._wallet_cache: dict | None = None
         self._get_paused = get_paused or (lambda: False)
         self._on_alert = on_alert
@@ -151,6 +152,11 @@ class DeskRuntime:
         from orchestrator.feeds.helius_wallets import swap_to_candidate
 
         if event.get("fomo_relay"):
+            sig = str(event.get("signature") or "")
+            if sig and sig in self._fomo_relay_seen:
+                return
+            if sig:
+                self._fomo_relay_seen.add(sig)
             asyncio.create_task(self._resolve_fomo_relay(event, mode))
             return
         if event.get("side") == "sell":
@@ -162,22 +168,31 @@ class DeskRuntime:
 
     async def _resolve_fomo_relay(self, event: dict, mode: DeskMode) -> None:
         """fomo USDC relay: meme token arrives seconds later in wallet."""
-        from orchestrator.feeds.fomo_relay import wait_for_new_mints
+        from orchestrator.feeds.fomo_relay import mints_from_txs_after_relay, wait_for_new_mints
         from orchestrator.feeds.helius_wallets import swap_to_candidate
 
         trader = str(event.get("trader") or "")
         if not trader or not self.settings.helius_api_key:
             return
-        known = self._wallet_mint_cache.setdefault(trader, set())
+        known_balances = dict(self._wallet_mint_cache.get(trader, {}))
         new_mints = await wait_for_new_mints(
             self.settings.helius_api_key,
             trader,
-            known=set(known),
+            known_balances=known_balances,
             retries=6,
             delay_sec=3.5,
         )
-        for mint, _amt in new_mints:
-            known.add(mint)
+        if not new_mints:
+            relay_ts = int(event.get("relay_ts") or 0)
+            new_mints = await mints_from_txs_after_relay(
+                self.settings.helius_api_key,
+                trader,
+                after_ts=relay_ts,
+                watched=set(self._copy_wallets),
+            )
+        cache = self._wallet_mint_cache.setdefault(trader, {})
+        for mint, amt in new_mints:
+            cache[mint] = amt
             buy_event = {
                 "side": "buy",
                 "mint": mint,
@@ -220,7 +235,6 @@ class DeskRuntime:
         import httpx
 
         from orchestrator.feeds.fomo_relay import parse_fomo_usdc_relay
-        from orchestrator.feeds.helius_wallets import parse_helius_swap, swap_to_candidate
 
         if not self.settings.helius_api_key:
             return 0
@@ -231,7 +245,7 @@ class DeskRuntime:
         resolved = 0
         url_tpl = (
             "https://api.helius.xyz/v0/addresses/{address}/transactions"
-            f"?api-key={self.settings.helius_api_key}&limit=20"
+            f"?api-key={self.settings.helius_api_key}&limit=15"
         )
         async with httpx.AsyncClient(timeout=30.0) as client:
             for addr in self._copy_wallets:
@@ -249,13 +263,6 @@ class DeskRuntime:
                         if relay:
                             await self.on_helius_wallet_trade(relay, mode)
                             resolved += 1
-                            continue
-                        parsed = parse_helius_swap(tx, watched)
-                        if parsed and parsed.get("side") == "buy":
-                            cand = swap_to_candidate(parsed, copy_boost=self.copy_cfg.copy_boost)
-                            if cand:
-                                await self._on_copy_trade(cand)
-                                resolved += 1
                 except Exception:
                     pass
         return resolved
@@ -931,7 +938,7 @@ async def start_desk(
         if settings.helius_api_key:
             for addr in desk._copy_wallets:
                 holdings = await wallet_mints_with_balance(settings.helius_api_key, addr)
-                desk._wallet_mint_cache[addr] = set(holdings.keys())
+                desk._wallet_mint_cache[addr] = holdings
         try:
             n = await desk.backfill_fomo_relays(get_mode(), minutes=60)
             if n:
