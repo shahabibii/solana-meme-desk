@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { buildSessionSnapshot, saveSession } from "./persist";
-import { useDesk } from "./store";
+import { buildSessionSnapshot, saveSession } from "../persist";
+import { useDesk } from "../store";
 
 /** Debounced sessionStorage sync — keeps feed/trades/equity across refresh. */
 export function useSessionPersist() {
