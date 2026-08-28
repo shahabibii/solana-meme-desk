@@ -1,9 +1,10 @@
-"""PumpPortal subscribeAccountTrade — mirror fomo / top-wallet buys."""
+"""PumpPortal subscribeAccountTrade — mirror fomo / top-wallet buys and sells."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import websockets
@@ -11,6 +12,7 @@ import websockets
 from orchestrator.models import MintCandidate
 
 OnCopyTrade = Callable[[MintCandidate], Awaitable[None]]
+OnCopySell = Callable[[dict[str, Any]], Awaitable[None]]
 
 WS_BASE = "wss://pumpportal.fun/api/data"
 
@@ -19,27 +21,42 @@ def _ws_url(api_key: str) -> str:
     return f"{WS_BASE}?api-key={api_key}"
 
 
-def parse_account_trade(raw: dict[str, Any], *, copy_boost: int = 25) -> MintCandidate | None:
-    tx = str(raw.get("txType") or raw.get("action") or "").lower()
-    if tx and tx != "buy":
-        return None
+def _tx_type(raw: dict[str, Any]) -> str:
+    return str(raw.get("txType") or raw.get("action") or "").lower()
 
+
+def _mint_from_raw(raw: dict[str, Any]) -> str | None:
     mint = raw.get("mint") or raw.get("token") or raw.get("tokenAddress")
     if not mint or len(str(mint)) < 32:
         return None
+    return str(mint)
 
-    trader = str(
+
+def _trader_from_raw(raw: dict[str, Any]) -> str:
+    return str(
         raw.get("traderPublicKey")
         or raw.get("trader")
         or raw.get("user")
         or raw.get("account")
         or ""
     )
+
+
+def parse_account_trade(raw: dict[str, Any], *, copy_boost: int = 25) -> MintCandidate | None:
+    tx = _tx_type(raw)
+    if tx and tx != "buy":
+        return None
+
+    mint = _mint_from_raw(raw)
+    if not mint:
+        return None
+
+    trader = _trader_from_raw(raw)
     sol = raw.get("solAmount") or raw.get("sol_amount") or raw.get("amount")
     symbol = str(raw.get("symbol") or raw.get("ticker") or "COPY")[:16]
 
     return MintCandidate(
-        mint=str(mint),
+        mint=mint,
         symbol=symbol,
         name=symbol,
         source="copy",
@@ -52,11 +69,31 @@ def parse_account_trade(raw: dict[str, Any], *, copy_boost: int = 25) -> MintCan
     )
 
 
+def parse_account_sell(raw: dict[str, Any]) -> dict[str, Any] | None:
+    tx = _tx_type(raw)
+    if tx and tx != "sell":
+        return None
+    mint = _mint_from_raw(raw)
+    if not mint:
+        return None
+    trader = _trader_from_raw(raw)
+    sol = raw.get("solAmount") or raw.get("sol_amount") or raw.get("amount")
+    symbol = str(raw.get("symbol") or raw.get("ticker") or "COPY")[:16]
+    return {
+        "mint": mint,
+        "symbol": symbol,
+        "trader": trader,
+        "trader_sol": float(sol) if sol is not None else None,
+        "trade_event": {k: raw[k] for k in list(raw.keys())[:16]},
+    }
+
+
 async def account_trade_listener(
     *,
     api_key: str,
     wallets_getter: Callable[[], list[str]],
     on_trade: OnCopyTrade,
+    on_sell: OnCopySell | None = None,
     running: Callable[[], bool],
     copy_boost: int = 25,
     reconnect_sec: float = 8.0,
@@ -87,6 +124,10 @@ async def account_trade_listener(
                     items = data if isinstance(data, list) else [data]
                     for item in items:
                         if not isinstance(item, dict):
+                            continue
+                        sell = parse_account_sell(item)
+                        if sell and on_sell:
+                            await on_sell(sell)
                             continue
                         cand = parse_account_trade(item, copy_boost=copy_boost)
                         if cand:

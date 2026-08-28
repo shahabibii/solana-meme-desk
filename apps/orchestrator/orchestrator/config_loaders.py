@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from orchestrator.copy_signals import CopyImprovementsConfig
+
 
 @dataclass
 class DeskFeedConfig:
@@ -17,6 +19,7 @@ class DeskFeedConfig:
     allowed_sources: frozenset[str] = frozenset({"copy", "convergence", "fomo"})
     entry_min_score_default: int = 72
     entry_min_score_by_source: dict[str, int] = field(default_factory=dict)
+    copy_improvements: "CopyImprovementsConfig | None" = None
 
 
 @dataclass
@@ -121,6 +124,18 @@ def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
     pump_feed = bool(raw.get("pump_launch_feed", not fomo_mode))
     if fomo_mode and "pump_launch_feed" not in raw:
         pump_feed = False
+    imp_raw = raw.get("copy_improvements") or {}
+    copy_improvements = CopyImprovementsConfig(
+        convergence_window_sec=int(imp_raw.get("convergence_window_sec", 600)),
+        convergence_min_wallets=int(imp_raw.get("convergence_min_wallets", 2)),
+        convergence_boost_per_wallet=int(imp_raw.get("convergence_boost_per_wallet", 12)),
+        convergence_size_step=float(imp_raw.get("convergence_size_step", 0.15)),
+        convergence_size_cap=float(imp_raw.get("convergence_size_cap", 2.0)),
+        mirror_sell_enabled=bool(imp_raw.get("mirror_sell_enabled", True)),
+        mirror_sell_fraction=float(imp_raw.get("mirror_sell_fraction", 0.5)),
+        mirror_sell_full_wallets=int(imp_raw.get("mirror_sell_full_wallets", 2)),
+        retry_after_block=bool(imp_raw.get("retry_after_block", True)),
+    )
     return DeskFeedConfig(
         fomo_copy_mode=fomo_mode,
         pump_launch_feed=pump_feed,
@@ -128,6 +143,7 @@ def load_desk_feed_config(config_dir: Path) -> DeskFeedConfig:
         allowed_sources=frozenset(str(s) for s in allowed),
         entry_min_score_default=default_score,
         entry_min_score_by_source=by_source,
+        copy_improvements=copy_improvements,
     )
 
 

@@ -36,7 +36,10 @@ def evaluate_copy(
         return CopyVerdict("SKIP", 0, f"trader_size={trader_sol}")
 
     boost = max(base_boost, candidate.copy_boost)
+    conv = int(candidate.meta.get("convergence_count") or 0)
     detail = f"mirror {trader}…"
     if trader_sol:
         detail += f" {float(trader_sol):.3f} SOL"
+    if conv >= 2:
+        detail += f" · convergence={conv}"
     return CopyVerdict("MIRROR", boost, detail)

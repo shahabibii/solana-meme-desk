@@ -14,6 +14,7 @@ from orchestrator.agents.safety import run_safety
 from orchestrator.agents.scorer import run_learner, score_candidate
 from orchestrator.agents.scout import scout_evaluate
 from orchestrator.config import DeskMode, Settings
+from orchestrator.copy_signals import CopyImprovementsConfig, CopySignalTracker, MintStatus
 from orchestrator.config_loaders import (
     CopyConfig,
     DeskFeedConfig,
@@ -72,6 +73,10 @@ class DeskRuntime:
         self._queue: asyncio.Queue[MintCandidate] = asyncio.Queue(maxsize=200)
         self._seen: set[str] = set()
         self._processing: set[str] = set()
+        imp = feed_cfg.copy_improvements or CopyImprovementsConfig()
+        self._copy_tracker = CopySignalTracker(
+            imp, watched_wallets=set(copy_cfg.wallets)
+        )
         self._min_score = feed_cfg.entry_min_score_default or settings.entry_min_score
         self._live_tracks: dict[str, dict] = {}
         self._copy_wallets: list[str] = list(copy_cfg.wallets)
@@ -83,9 +88,20 @@ class DeskRuntime:
     async def enqueue(self, candidate: MintCandidate) -> None:
         if self.feed_cfg.fomo_copy_mode and candidate.source not in self.feed_cfg.allowed_sources:
             return
-        if candidate.mint in self._seen or candidate.mint in self._processing:
+        mint = candidate.mint
+        if candidate.source == "copy":
+            trader = str(candidate.meta.get("trader") or "")
+            count, is_new = self._copy_tracker.record_buy(mint, trader)
+            candidate.meta["convergence_count"] = count
+            candidate.copy_boost += self._copy_tracker.convergence_boost(count)
+            if not self._copy_tracker.should_enqueue_buy(mint, is_new_trader=is_new):
+                return
+        else:
+            if mint in self._seen or mint in self._processing:
+                return
+            self._seen.add(mint)
+        if mint in self._processing:
             return
-        self._seen.add(candidate.mint)
         if self._queue.qsize() > 180:
             return
         await self._queue.put(candidate)
@@ -119,6 +135,92 @@ class DeskRuntime:
     async def _on_copy_trade(self, candidate: MintCandidate) -> None:
         await self.enqueue(candidate)
 
+    async def handle_copy_sell(self, event: dict, mode: DeskMode) -> None:
+        """Mirror exit when a watched wallet sells a token we hold."""
+        imp = self.feed_cfg.copy_improvements
+        if not imp or not imp.mirror_sell_enabled:
+            return
+        mint = str(event.get("mint") or "")
+        if len(mint) < 32:
+            return
+        trader = str(event.get("trader") or "")
+        symbol = str(event.get("symbol") or "COPY")
+        sell_count = self._copy_tracker.record_sell(mint, trader)
+        fraction = self._copy_tracker.mirror_sell_fraction(sell_count)
+        if fraction <= 0:
+            return
+
+        if mode == DeskMode.PAPER:
+            if mint not in self.paper.positions:
+                return
+            result = self.paper.sell(mint, fraction)
+            if not result:
+                return
+            proceeds, pnl_pct = result
+            self.journal.record_trade(
+                mint=mint,
+                symbol=symbol,
+                side="sell",
+                sol=proceeds,
+                pnl_pct=pnl_pct,
+                mode="paper",
+                source="copy",
+                detail={
+                    "exit": "mirror_sell",
+                    "trader": trader,
+                    "sell_count": sell_count,
+                    "fraction": fraction,
+                },
+            )
+            self.journal.record_equity(self.paper.equity_sol)
+            await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "paper"))
+            if self._on_alert:
+                await self._on_alert(
+                    f"Mirror sell {symbol} · {fraction:.0%} · {sell_count} wallet(s) exiting"
+                )
+            await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
+            return
+
+        if mode == DeskMode.LIVE and mint in self._live_tracks:
+            track = self._live_tracks.get(mint)
+            if not track:
+                return
+            price, _ = await mark_price_usd(mint)
+            entry_px = float(track.get("entry_price") or 0.0001)
+            pct = ((price / entry_px) - 1.0) * 100.0 if price and entry_px > 0 else 0.0
+            try:
+                result = await self.live.sell(mint, fraction)
+                sig = result.get("signature", "")
+                proceeds = float(track["entry_sol"]) * fraction * (1.0 + pct / 100.0)
+                self.journal.record_trade(
+                    mint=mint,
+                    symbol=str(track.get("symbol") or symbol),
+                    side="sell",
+                    sol=proceeds,
+                    pnl_pct=pct,
+                    mode="live",
+                    source="copy",
+                    detail={
+                        "exit": "mirror_sell",
+                        "trader": trader,
+                        "sell_count": sell_count,
+                        "fraction": fraction,
+                        "signature": sig,
+                    },
+                )
+                await self.broadcast(ev.trade_fill("sell", mint, round(proceeds, 4), "live"))
+                if fraction >= 1.0:
+                    self._live_tracks.pop(mint, None)
+                else:
+                    track["entry_sol"] = float(track["entry_sol"]) * (1.0 - fraction)
+                if self._on_alert:
+                    await self._on_alert(
+                        f"Mirror sell {symbol} · {fraction:.0%} · {sell_count} wallet(s) exiting"
+                    )
+                await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
+            except Exception:
+                pass
+
     async def refresh_copy_wallets(self) -> list[str]:
         wallets = list(self.copy_cfg.wallets)
         if self.cope.enabled:
@@ -134,6 +236,7 @@ class DeskRuntime:
                 if w not in wallets:
                     wallets.append(w)
         self._copy_wallets = wallets[: self.copy_cfg.max_wallets]
+        self._copy_tracker.watched_wallets = set(self._copy_wallets)
         self._last_copy_refresh = time.time()
         return self._copy_wallets
 
@@ -176,6 +279,14 @@ class DeskRuntime:
                 "manual_follows": len(self.fomo_follows.handles),
                 "configured_wallets": len(self.copy_cfg.wallets),
                 "cope_error": self.cope.last_error,
+                "mirror_sell": bool(
+                    self.feed_cfg.copy_improvements and self.feed_cfg.copy_improvements.mirror_sell_enabled
+                ),
+                "convergence_window_sec": (
+                    self.feed_cfg.copy_improvements.convergence_window_sec
+                    if self.feed_cfg.copy_improvements
+                    else 600
+                ),
             },
             "daily_loss_sol": {
                 "paper": round(self.risk.daily_realized_loss_sol("paper"), 4),
@@ -205,11 +316,14 @@ class DeskRuntime:
                 candidate = await asyncio.wait_for(self._queue.get(), timeout=30.0)
             except asyncio.TimeoutError:
                 continue
-            self._processing.add(candidate.mint)
+            mint = candidate.mint
+            self._processing.add(mint)
+            if candidate.source == "copy":
+                self._copy_tracker.set_status(mint, "processing")
             try:
                 await self._run_pipeline(candidate, get_mode())
             finally:
-                self._processing.discard(candidate.mint)
+                self._processing.discard(mint)
 
     async def learner_scheduler(self, running: Callable[[], bool]) -> None:
         while running():
@@ -236,162 +350,188 @@ class DeskRuntime:
         return self.paper.cash_sol
 
     async def _run_pipeline(self, candidate: MintCandidate, mode: DeskMode) -> None:
-        if self._get_paused():
-            return
         mint = candidate.mint
-        await self.broadcast(ev.mint_candidate(mint, candidate.source, candidate.symbol))
+        outcome: MintStatus = "blocked"
+        try:
+            if self._get_paused():
+                return
+            await self.broadcast(ev.mint_candidate(mint, candidate.source, candidate.symbol))
 
-        t0 = time.perf_counter()
-        scout_verdict, scout_detail = scout_evaluate(
-            candidate,
-            min_copy_trader_sol=self.copy_cfg.min_trader_sol,
-            fomo_copy_mode=self.feed_cfg.fomo_copy_mode,
-            allowed_sources=self.feed_cfg.allowed_sources,
-        )
-        await self._agent_step(
-            "scout",
-            mint,
-            scout_verdict,
-            int((time.perf_counter() - t0) * 1000),
-            scout_detail,
-        )
-        if scout_verdict == "SKIP":
-            return
-
-        report = await run_safety(mint, self.settings, source=candidate.source)
-        await self._agent_step("safety", mint, report.verdict, report.ms, ";".join(report.reasons))
-        if not report.passed:
-            self.journal.record_block(mint, report.reasons)
-            await self.broadcast(ev.mint_blocked(mint, report.reasons))
-            return
-
-        copy = evaluate_copy(
-            candidate,
-            min_trader_sol=self.copy_cfg.min_trader_sol,
-            base_boost=self.copy_cfg.copy_boost,
-        )
-        await self._agent_step("copy", mint, copy.verdict, 45, copy.detail)
-        if copy.verdict == "SKIP":
-            return
-        if copy.boost:
-            candidate.copy_boost = max(candidate.copy_boost, copy.boost)
-
-        research = await run_research(
-            candidate,
-            cope_api_key=self.settings.cope_api_key,
-            openai_api_key=self.settings.openai_api_key,
-            llm_enabled=self.settings.research_llm_enabled,
-            safety_score=report.score,
-            openai_model=self.settings.openai_model,
-        )
-        await self._agent_step("research", mint, research.verdict, research.ms, research.detail)
-
-        weights = self.journal.get_weights()
-        scored = score_candidate(
-            candidate,
-            report,
-            weights,
-            min_score=self._min_score,
-            min_score_by_source=self.feed_cfg.entry_min_score_by_source,
-        )
-        await self._agent_step(
-            "scorer",
-            mint,
-            "TRADE" if scored.trade else "SKIP",
-            25,
-            f"score={scored.score}",
-        )
-        if not scored.trade:
-            return
-
-        mode_str = mode.value
-        open_n = self._open_count(mode)
-        ok, reason = self.risk.can_open_position(mode=mode_str, open_count=open_n)
-        if not ok:
-            await self._agent_step("executor", mint, "REJECTED", 10, reason)
-            if reason == "max_daily_loss" and self._on_alert:
-                await self._on_alert(f"Daily loss cap hit ({mode_str}) — desk blocked new entries.")
-            return
-
-        on_chain = await self.live.get_balance_sol() if mode == DeskMode.LIVE else None
-        cash = self._cash_for_sizing(mode, on_chain)
-        trader_sol = candidate.meta.get("trader_sol")
-        sol = self.risk.size_entry_sol(
-            mode=mode_str,
-            cash_sol=cash,
-            trader_sol=float(trader_sol) if trader_sol is not None else None,
-            copy_ratio=self.copy_cfg.copy_ratio,
-        )
-        if sol <= 0.001:
-            await self._agent_step("executor", mint, "INSUFFICIENT", 10)
-            return
-
-        trade_event = candidate.meta.get("trade_event") if isinstance(candidate.meta.get("trade_event"), dict) else None
-        price, price_src = await mark_price_usd(mint, event=trade_event)
-        await self.broadcast(ev.agent_start("executor", mint))
-
-        if mode == DeskMode.PAPER:
-            ok_buy = self.paper.buy(
-                mint,
-                candidate.symbol,
-                round(sol, 4),
-                price,
-                source=candidate.source,
-                safety_score=report.score,
+            t0 = time.perf_counter()
+            scout_verdict, scout_detail = scout_evaluate(
+                candidate,
+                min_copy_trader_sol=self.copy_cfg.min_trader_sol,
+                fomo_copy_mode=self.feed_cfg.fomo_copy_mode,
+                allowed_sources=self.feed_cfg.allowed_sources,
             )
-            if ok_buy:
-                self.journal.record_trade(
-                    mint=mint,
-                    symbol=candidate.symbol,
-                    side="buy",
-                    sol=sol,
-                    pnl_pct=None,
-                    mode="paper",
+            await self._agent_step(
+                "scout",
+                mint,
+                scout_verdict,
+                int((time.perf_counter() - t0) * 1000),
+                scout_detail,
+            )
+            if scout_verdict == "SKIP":
+                outcome = "skipped"
+                return
+
+            report = await run_safety(mint, self.settings, source=candidate.source)
+            await self._agent_step("safety", mint, report.verdict, report.ms, ";".join(report.reasons))
+            if not report.passed:
+                self.journal.record_block(mint, report.reasons)
+                await self.broadcast(ev.mint_blocked(mint, report.reasons))
+                return
+
+            copy = evaluate_copy(
+                candidate,
+                min_trader_sol=self.copy_cfg.min_trader_sol,
+                base_boost=self.copy_cfg.copy_boost,
+            )
+            await self._agent_step("copy", mint, copy.verdict, 45, copy.detail)
+            if copy.verdict == "SKIP":
+                return
+            if copy.boost:
+                candidate.copy_boost = max(candidate.copy_boost, copy.boost)
+
+            research = await run_research(
+                candidate,
+                cope_api_key=self.settings.cope_api_key,
+                openai_api_key=self.settings.openai_api_key,
+                llm_enabled=self.settings.research_llm_enabled,
+                safety_score=report.score,
+                openai_model=self.settings.openai_model,
+            )
+            await self._agent_step("research", mint, research.verdict, research.ms, research.detail)
+
+            weights = self.journal.get_weights()
+            scored = score_candidate(
+                candidate,
+                report,
+                weights,
+                min_score=self._min_score,
+                min_score_by_source=self.feed_cfg.entry_min_score_by_source,
+            )
+            await self._agent_step(
+                "scorer",
+                mint,
+                "TRADE" if scored.trade else "SKIP",
+                25,
+                f"score={scored.score}",
+            )
+            if not scored.trade:
+                return
+
+            mode_str = mode.value
+            open_n = self._open_count(mode)
+            ok, reason = self.risk.can_open_position(mode=mode_str, open_count=open_n)
+            if not ok:
+                await self._agent_step("executor", mint, "REJECTED", 10, reason)
+                if reason == "max_daily_loss" and self._on_alert:
+                    await self._on_alert(f"Daily loss cap hit ({mode_str}) — desk blocked new entries.")
+                return
+
+            on_chain = await self.live.get_balance_sol() if mode == DeskMode.LIVE else None
+            cash = self._cash_for_sizing(mode, on_chain)
+            trader_sol = candidate.meta.get("trader_sol")
+            conv = int(candidate.meta.get("convergence_count") or 0)
+            size_mult = self._copy_tracker.size_multiplier(conv)
+            sol = self.risk.size_entry_sol(
+                mode=mode_str,
+                cash_sol=cash,
+                trader_sol=float(trader_sol) if trader_sol is not None else None,
+                copy_ratio=self.copy_cfg.copy_ratio,
+                size_multiplier=size_mult,
+            )
+            if sol <= 0.001:
+                await self._agent_step("executor", mint, "INSUFFICIENT", 10)
+                return
+
+            trade_event = candidate.meta.get("trade_event") if isinstance(candidate.meta.get("trade_event"), dict) else None
+            price, price_src = await mark_price_usd(mint, event=trade_event)
+            await self.broadcast(ev.agent_start("executor", mint))
+
+            if mode == DeskMode.PAPER:
+                ok_buy = self.paper.buy(
+                    mint,
+                    candidate.symbol,
+                    round(sol, 4),
+                    price,
                     source=candidate.source,
                     safety_score=report.score,
-                    detail={"price_src": price_src, "trader": candidate.meta.get("trader")},
                 )
-                self.journal.record_equity(self.paper.equity_sol)
-                await self.broadcast(ev.trade_fill("buy", mint, sol, "paper"))
-                if self._on_alert:
-                    await self._on_alert(f"BUY {candidate.symbol} · {sol:.3f} SOL · paper · {candidate.source}")
-                await self._agent_step("executor", mint, "FILLED", 120)
-                await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
+                if ok_buy:
+                    self.journal.record_trade(
+                        mint=mint,
+                        symbol=candidate.symbol,
+                        side="buy",
+                        sol=sol,
+                        pnl_pct=None,
+                        mode="paper",
+                        source=candidate.source,
+                        safety_score=report.score,
+                        detail={
+                            "price_src": price_src,
+                            "trader": candidate.meta.get("trader"),
+                            "convergence_count": conv,
+                        },
+                    )
+                    self.journal.record_equity(self.paper.equity_sol)
+                    await self.broadcast(ev.trade_fill("buy", mint, sol, "paper"))
+                    if self._on_alert:
+                        await self._on_alert(
+                            f"BUY {candidate.symbol} · {sol:.3f} SOL · paper · {candidate.source}"
+                            + (f" · conv={conv}" if conv >= 2 else "")
+                        )
+                    await self._agent_step("executor", mint, "FILLED", 120)
+                    await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
+                    outcome = "filled"
+                else:
+                    await self._agent_step("executor", mint, "REJECTED", 50, "risk_cap")
+            elif self.live.ready:
+                try:
+                    result = await self.live.buy(mint, sol)
+                    sig = result.get("signature", "")
+                    self.journal.record_trade(
+                        mint=mint,
+                        symbol=candidate.symbol,
+                        side="buy",
+                        sol=sol,
+                        pnl_pct=None,
+                        mode="live",
+                        source=candidate.source,
+                        safety_score=report.score,
+                        detail={
+                            "signature": sig,
+                            "price_src": price_src,
+                            "convergence_count": conv,
+                            **result,
+                        },
+                    )
+                    self._live_tracks[mint] = {
+                        "symbol": candidate.symbol,
+                        "entry_sol": sol,
+                        "entry_ts": datetime.now(timezone.utc),
+                        "source": candidate.source,
+                        "peak_pnl_pct": 0.0,
+                        "entry_price": price or 0.0001,
+                        "tp_hit": set(),
+                    }
+                    await self.broadcast(ev.trade_fill("buy", mint, sol, "live"))
+                    if self._on_alert:
+                        await self._on_alert(
+                            f"BUY {candidate.symbol} · {sol:.3f} SOL · LIVE · {candidate.source}"
+                            + (f" · conv={conv}" if conv >= 2 else "")
+                        )
+                    await self._agent_step("executor", mint, "SUBMITTED", 200, sig[:16] if sig else None)
+                    await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
+                    outcome = "filled"
+                except Exception as exc:
+                    await self._agent_step("executor", mint, "ERROR", 50, str(exc)[:120])
             else:
-                await self._agent_step("executor", mint, "REJECTED", 50, "risk_cap")
-        elif self.live.ready:
-            try:
-                result = await self.live.buy(mint, sol)
-                sig = result.get("signature", "")
-                self.journal.record_trade(
-                    mint=mint,
-                    symbol=candidate.symbol,
-                    side="buy",
-                    sol=sol,
-                    pnl_pct=None,
-                    mode="live",
-                    source=candidate.source,
-                    safety_score=report.score,
-                    detail={"signature": sig, "price_src": price_src, **result},
-                )
-                self._live_tracks[mint] = {
-                    "symbol": candidate.symbol,
-                    "entry_sol": sol,
-                    "entry_ts": datetime.now(timezone.utc),
-                    "source": candidate.source,
-                    "peak_pnl_pct": 0.0,
-                    "entry_price": price or 0.0001,
-                    "tp_hit": set(),
-                }
-                await self.broadcast(ev.trade_fill("buy", mint, sol, "live"))
-                if self._on_alert:
-                    await self._on_alert(f"BUY {candidate.symbol} · {sol:.3f} SOL · LIVE · {candidate.source}")
-                await self._agent_step("executor", mint, "SUBMITTED", 200, sig[:16] if sig else None)
-                await self.broadcast(ev.status_snapshot({"wallet": await self.wallet_snapshot(mode)}))
-            except Exception as exc:
-                await self._agent_step("executor", mint, "ERROR", 50, str(exc)[:120])
-        else:
-            await self._agent_step("executor", mint, "NOT_CONFIGURED", 30, "SOLANA_PRIVATE_KEY")
+                await self._agent_step("executor", mint, "NOT_CONFIGURED", 30, "SOLANA_PRIVATE_KEY")
+        finally:
+            if candidate.source == "copy":
+                self._copy_tracker.set_status(mint, outcome)
 
     async def wallet_snapshot(self, mode: DeskMode) -> dict:
         on_chain = await self.live.get_balance_sol() if self.live.ready else None
@@ -636,10 +776,14 @@ async def start_desk(
     if settings.pumpportal_api_key and copy_cfg.enabled:
 
         async def _copy_listener() -> None:
+            async def _on_sell(event: dict) -> None:
+                await desk.handle_copy_sell(event, get_mode())
+
             await account_trade_listener(
                 api_key=settings.pumpportal_api_key or "",
                 wallets_getter=lambda: desk._copy_wallets,
                 on_trade=desk._on_copy_trade,
+                on_sell=_on_sell,
                 running=running,
                 copy_boost=copy_cfg.copy_boost,
             )

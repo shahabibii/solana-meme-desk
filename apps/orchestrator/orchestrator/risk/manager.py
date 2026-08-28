@@ -98,9 +98,11 @@ class RiskManager:
         cash_sol: float,
         trader_sol: float | None = None,
         copy_ratio: float = 0.25,
+        size_multiplier: float = 1.0,
     ) -> float:
         lim = self.limits_for(mode)
         base = min(lim.max_position_sol, cash_sol * 0.1)
         if trader_sol and trader_sol > 0:
             base = min(lim.max_position_sol, max(base, trader_sol * copy_ratio))
-        return round(max(0.0, base), 4)
+        scaled = min(lim.max_position_sol, base * max(1.0, size_multiplier))
+        return round(max(0.0, scaled), 4)
