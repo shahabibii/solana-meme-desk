@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from orchestrator.execution.live import LiveExecutor
 from orchestrator.execution.paper import PaperBook
 from orchestrator.journal.store import JournalStore
 from orchestrator.sniper_health import SniperHealthStore
+
+log = logging.getLogger(__name__)
 from orchestrator.tts.maisie import synthesize_maisie, voice_info
 from orchestrator.ws.events import mode_changed, status_snapshot
 
@@ -458,6 +461,8 @@ async def helius_webhook(
             continue
         handled += 1
         await _desk.on_helius_wallet_trade(parsed, _desk_mode)
+    if received and not handled:
+        log.debug("helius webhook: received=%s handled=0", received)
     return {"ok": True, "received": received, "handled": handled}
 
 

@@ -16,6 +16,9 @@ from orchestrator.models import MintCandidate
 log = logging.getLogger(__name__)
 HELIUS_API = "https://api.helius.xyz/v0/webhooks"
 
+# Helius types we mirror for watched wallets (SWAP-only misses Pump transfers & many Jupiter routes).
+HELIUS_WALLET_TX_TYPES = ["SWAP", "BUY", "SELL", "TRANSFER"]
+
 PUMP_VENUES = frozenset(
     {
         "PUMP",
@@ -190,7 +193,8 @@ def _parse_account_data(tx: dict[str, Any], watched: set[str]) -> dict[str, Any]
     return None
 
 
-def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
+def _parse_token_flows(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
+    """Net token flows per watched wallet — handles multi-hop swaps and TRANSFERs."""
     sol_spent: dict[str, float] = {}
     for nt in tx.get("nativeTransfers") or []:
         sender = str(nt.get("fromUserAccount") or "")
@@ -199,69 +203,82 @@ def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, A
             if sol:
                 sol_spent[sender] = max(sol_spent.get(sender, 0.0), sol)
 
+    # (trader, mint) -> signed net token amount (positive = received)
+    net: dict[tuple[str, str], float] = {}
     for tt in tx.get("tokenTransfers") or []:
         mint = str(tt.get("mint") or "")
-        if not mint or mint == SOL_MINT:
+        if not mint:
             continue
-        to_acct = str(tt.get("toUserAccount") or "")
-        from_acct = str(tt.get("fromUserAccount") or "")
-        amt = tt.get("tokenAmount")
         try:
-            amount = float(amt or 0)
+            amount = float(tt.get("tokenAmount") or 0)
         except (TypeError, ValueError):
             amount = 0.0
         if amount <= 0:
             continue
+        to_acct = str(tt.get("toUserAccount") or "")
+        from_acct = str(tt.get("fromUserAccount") or "")
         if to_acct in watched:
-            ev = _copy_event("buy", mint, tx, to_acct, trader_sol=sol_spent.get(to_acct))
-            if ev:
-                return ev
+            net[(to_acct, mint)] = net.get((to_acct, mint), 0.0) + amount
         if from_acct in watched:
-            return _copy_event("sell", mint, tx, from_acct)
+            net[(from_acct, mint)] = net.get((from_acct, mint), 0.0) - amount
 
-    fee_payer = str(tx.get("feePayer") or "")
-    if fee_payer in watched:
-        for tt in tx.get("tokenTransfers") or []:
-            mint = str(tt.get("mint") or "")
-            if not mint or mint == SOL_MINT:
-                continue
-            to_acct = str(tt.get("toUserAccount") or "")
-            from_acct = str(tt.get("fromUserAccount") or "")
-            if to_acct == fee_payer:
-                ev = _copy_event("buy", mint, tx, fee_payer, trader_sol=sol_spent.get(fee_payer))
-                if ev:
-                    return ev
-            if from_acct == fee_payer:
-                return _copy_event("sell", mint, tx, fee_payer)
+    best_buy: tuple[str, str, float] | None = None  # trader, mint, amount
+    best_sell: tuple[str, str, float] | None = None
 
+    for (trader, mint), delta in net.items():
+        if not is_copyable_mint(mint):
+            continue
+        if delta > 0 and (best_buy is None or delta > best_buy[2]):
+            best_buy = (trader, mint, delta)
+        elif delta < 0 and (best_sell is None or abs(delta) > best_sell[2]):
+            best_sell = (trader, mint, abs(delta))
+
+    if best_buy:
+        trader, mint, _ = best_buy
+        return _copy_event("buy", mint, tx, trader, trader_sol=sol_spent.get(trader))
+    if best_sell:
+        trader, mint, _ = best_sell
+        return _copy_event("sell", mint, tx, trader)
     return None
+
+
+def _parse_token_transfers(tx: dict[str, Any], watched: set[str]) -> dict[str, Any] | None:
+    return _parse_token_flows(tx, watched)
 
 
 def parse_helius_swap(
     tx: dict[str, Any],
     watched: set[str],
 ) -> dict[str, Any] | None:
-    """Parse one enhanced Helius SWAP into a copy buy or sell event."""
-    if str(tx.get("type") or "").upper() != "SWAP":
+    """Parse one enhanced Helius wallet event into a copy buy or sell."""
+    tx_type = str(tx.get("type") or "").upper()
+    if tx_type not in HELIUS_WALLET_TX_TYPES:
         return None
     if tx.get("transactionError"):
         return None
     if not watched:
         return None
 
-    for parser in (_parse_events_swap, _parse_account_data, _parse_token_transfers):
+    for parser in (_parse_events_swap, _parse_token_flows, _parse_account_data):
         parsed = parser(tx, watched)
         if parsed:
             return parsed
 
-    fee_payer = str(tx.get("feePayer") or "")
-    if fee_payer in watched:
-        log.debug(
-            "helius swap unmatched for watched wallet %s sig=%s source=%s",
-            fee_payer[:8],
-            str(tx.get("signature") or "")[:16],
-            tx.get("source"),
-        )
+    sig = str(tx.get("signature") or "")[:16]
+    for trader in watched:
+        if any(
+            str(tt.get("toUserAccount") or "") == trader
+            or str(tt.get("fromUserAccount") or "") == trader
+            for tt in (tx.get("tokenTransfers") or [])
+        ):
+            log.debug(
+                "helius %s unmatched for %s sig=%s source=%s",
+                tx_type,
+                trader[:8],
+                sig,
+                tx.get("source"),
+            )
+            break
     return None
 
 
@@ -317,7 +334,7 @@ async def sync_wallet_webhook(
     auth_header: str,
     data_dir: Path,
 ) -> dict[str, Any]:
-    """Create or update Helius enhanced webhook for SWAP events on copy wallets."""
+    """Create or update Helius enhanced webhook for wallet trade events."""
     state_path = data_dir / "helius_webhook.json"
     stored: dict[str, Any] = {}
     if state_path.exists():
@@ -333,7 +350,7 @@ async def sync_wallet_webhook(
     payload = {
         "webhookURL": webhook_url,
         "webhookType": "enhanced",
-        "transactionTypes": ["SWAP"],
+        "transactionTypes": list(HELIUS_WALLET_TX_TYPES),
         "accountAddresses": cleaned,
         "authHeader": auth_header,
     }

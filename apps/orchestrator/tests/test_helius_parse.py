@@ -90,6 +90,55 @@ def test_token_transfer_fallback_buy() -> None:
     assert parsed["trader_sol"] == 0.08
 
 
+def test_transfer_in_pump_token() -> None:
+    pump = "3Atv2msRFLpgPTKHxALnKWTNXrbgCvg4TWZdCHYZpump"
+    tx = {
+        "type": "TRANSFER",
+        "source": "SOLANA_PROGRAM_LIBRARY",
+        "signature": "xfer1",
+        "tokenTransfers": [
+            {
+                "fromUserAccount": OTHER,
+                "toUserAccount": WALLET,
+                "mint": pump,
+                "tokenAmount": 100000.0,
+            }
+        ],
+    }
+    parsed = parse_helius_swap(tx, {WALLET})
+    assert parsed is not None
+    assert parsed["side"] == "buy"
+    assert parsed["mint"] == pump
+
+
+def test_jupiter_swap_picks_meme_over_usdc_noise() -> None:
+    pump = "4PFGKQbJYRZbk8SHNzqQf4DcpyrKJ7r5UKwj4f37pump"
+    tx = {
+        "type": "SWAP",
+        "source": "JUPITER",
+        "signature": "jupmulti",
+        "events": {"swap": {"tokenInputs": [], "tokenOutputs": []}},
+        "tokenTransfers": [
+            {
+                "fromUserAccount": OTHER,
+                "toUserAccount": WALLET,
+                "mint": USDC_MINT,
+                "tokenAmount": 4012.0,
+            },
+            {
+                "fromUserAccount": WALLET,
+                "toUserAccount": OTHER,
+                "mint": pump,
+                "tokenAmount": 14276161.0,
+            },
+        ],
+    }
+    parsed = parse_helius_swap(tx, {WALLET})
+    assert parsed is not None
+    assert parsed["side"] == "sell"
+    assert parsed["mint"] == pump
+
+
 def test_ignores_unwatched_wallet() -> None:
     tx = {
         "type": "SWAP",
